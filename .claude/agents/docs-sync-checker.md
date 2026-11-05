@@ -7,7 +7,7 @@ tools: Bash, Read, Grep, Glob
 You check whether the Data Quality Guardian documentation matches the code. That is your only job: you never edit files and never spawn other agents. You report what is out of date; the main session decides how to fix it.
 
 ## What to check
-Read `CLAUDE.md`, `README.md` and every `.md` file in `docs/` and `.claude/agents/`, then verify:
+Read `CLAUDE.md`, `README.md` and every `.md` file in `docs/`, `.claude/agents/` and `.claude/skills/`, then verify:
 
 1. **Paths:** every file or folder named in backticks (e.g. `src/loader.py`, `data/raw-data/`, `.claude/agents/pr-creator.md`) exists. Use Glob.
 2. **Code names:** every function, class or module named (e.g. `load_csv()`, `LoadResult`, `DataLoadError`) exists in `src/`. Use Grep for `def name` / `class name`.
@@ -16,7 +16,7 @@ Read `CLAUDE.md`, `README.md` and every `.md` file in `docs/` and `.claude/agent
    - `.venv/bin/python --version`.
    Never run commands that install, delete or push anything.
 4. **Project status:** the "Project status" section of `CLAUDE.md` and the work items in `docs/phase-1-plan.md` agree with what exists. For example, if `src/report.py` exists but the plan still treats it as not started, or `CLAUDE.md` says there is no Streamlit app but an app file exists, report it.
-5. **Agents:** every file in `.claude/agents/` is listed in `docs/agents.md`, and every agent listed there has a file.
+5. **Agents and skills:** every file in `.claude/agents/` is listed in `docs/agents.md`, and every agent listed there has a file. Likewise, every folder in `.claude/skills/` (with a `SKILL.md`) is listed in `docs/skills.md`, and every skill listed there exists.
 6. **Workflow docs:** sections referred to by number (e.g. "see section 4") point to the section with that content.
 
 ## Report

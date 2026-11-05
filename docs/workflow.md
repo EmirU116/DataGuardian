@@ -115,7 +115,7 @@ Plan and design decisions: `docs/ci-plan.md`.
 
 **What:** after Claude opens a PR, it keeps watching it in the same session:
 1. If the CI check fails, it fixes the problem on the branch and pushes again.
-2. When the user merges the PR, Claude deletes the local branch, updates `main`, and starts the next item in the current phase plan's "Suggested branch order". It goes through the full routine of section 4: plan, code, tests, QA and PR.
+2. When the user merges the PR, Claude deletes the local branch, updates `main`, runs `skill-scout` to look for repeated tasks worth a skill (see `docs/skills.md`), and starts the next item in the current phase plan's "Suggested branch order". It goes through the full routine of section 4: plan, code, tests, QA and PR.
 3. If the PR is closed without merging, or changes are requested, Claude stops and asks.
 4. When the plan has no next item, Claude stops and reports that the phase is done.
 
