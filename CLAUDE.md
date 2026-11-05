@@ -59,7 +59,8 @@ When Claude is satisfied that a feature on its branch is complete, it does the f
 ## Agents
 - Multi-agent work is NOT allowed when developing a feature: do not spawn parallel or fan-out subagents to plan, write or review feature code. Work on a feature in a single session so the user stays in control of what changes.
 - Allowed: single-purpose agents that are part of the project's own system and help the user, such as `pr-creator`. New agents of this kind go in `.claude/agents/` and must focus on one specific task.
-- Current agents: `pr-creator`, `branch-cleaner`, `dataset-profiler`, `dependency-checker`, `docs-sync-checker`. See `docs/agents.md` for what each does and when to use it; add a row there for every new agent.
+- Exception for QA: the `qa-auditor` agent may review feature code, data, pipelines and algorithms, including bias testing. It is read-only and only reports findings; the main session fixes them, so the user stays in control of every change.
+- Current agents: `pr-creator`, `branch-cleaner`, `dataset-profiler`, `dependency-checker`, `docs-sync-checker`, `qa-auditor`. See `docs/agents.md` for what each does and when to use it; add a row there for every new agent.
 
 ## Documentation
 - `./docs/workflow.md`: workflows (such as the git branch workflow above) with an explanation of the problem each one solves and why it is used.
