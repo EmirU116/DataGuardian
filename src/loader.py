@@ -42,7 +42,10 @@ from __future__ import annotations
 import codecs
 import csv
 import io
+import itertools
 import re
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -58,6 +61,17 @@ MAX_HEADER_SEARCH_CHARS = 1024 * 1024
 
 # How many data rows the delimiter fallback looks at.
 DELIMITER_CHECK_ROWS = 200
+
+# The csv module refuses fields over 128 KiB by default. Real files can have
+# longer values, and an unclosed quote swallows everything after it; both must
+# be read (and reported) rather than fail or be dropped. 2**31 - 1 is the
+# largest limit every platform accepts.
+MAX_CSV_FIELD_SIZE = 2**31 - 1
+
+# When two delimiters fit the header and the data equally well, prefer the one
+# least likely to appear inside values: commas are common in text and decimal
+# numbers ("2,5"), so the comma comes last.
+TIE_PREFERENCE = "\t;|,"
 
 # Delimiters we try to detect. Restricting the set stops Sniffer from picking
 # letters or punctuation that merely happen to appear on every line.
@@ -151,9 +165,10 @@ def load_csv(
     df, bad_rows, encoding = _read_with_fallback(
         path, delimiter, encoding, warnings, skiprows=leading_blank
     )
-    # pandas silently stops at, or skips, a record with broken quoting ('"a"b,c').
-    # Count the records independently so no row disappears without a trace.
-    unread, unread_detail = _count_unread_rows(
+    # pandas silently stops at, or skips, a record with broken quoting ('"a"b,c'),
+    # or merges the lines after an unclosed quote. Check the quoting and count
+    # the records independently, so no row disappears without a trace.
+    unread, quoting_problem, verified = _check_quoting(
         path, delimiter, encoding, skiprows=leading_blank, rows_read=len(df) + len(bad_rows)
     )
     df, dropped_blank, kept_blank = _handle_blank_lines(df)
@@ -169,7 +184,7 @@ def load_csv(
     if df.empty and unread:
         raise DataLoadError(
             f"No data row could be read: {unread} row(s) have broken quoting "
-            f"({unread_detail}): {path}"
+            f"({quoting_problem}): {path}"
         )
     if df.empty:
         raise DataLoadError(f"File has a header but no data rows: {path}")
@@ -198,7 +213,17 @@ def load_csv(
     if unread:
         warnings.append(
             f"Skipped {unread} row(s) with broken quoting that could not be read "
-            f"({unread_detail}). Check the quotes on that line."
+            f"({quoting_problem}). Check the quotes there."
+        )
+    elif quoting_problem:
+        warnings.append(
+            f"Broken quoting at {quoting_problem}. No row was lost, but the values "
+            f"there may be merged into one field or cut. Check the quotes there."
+        )
+    if not verified:
+        warnings.append(
+            "The row count could not be double-checked (the file could not be "
+            "re-read as CSV); rows with broken quoting may be missing."
         )
 
     return LoadResult(
@@ -478,10 +503,11 @@ def _detect_delimiter(text_sample: str, *, complete: bool = False) -> tuple[str,
     if len(lines) > 1 and not complete:
         lines = lines[:-1]
     try:
-        dialect = csv.Sniffer().sniff("\n".join(lines), delimiters=CANDIDATE_DELIMITERS)
-        return dialect.delimiter, None
+        sniffed = csv.Sniffer().sniff("\n".join(lines), delimiters=CANDIDATE_DELIMITERS).delimiter
     except csv.Error:
-        pass
+        sniffed = None
+    if sniffed is not None:
+        return _break_delimiter_tie(text_sample, sniffed, complete=complete)
 
     best: tuple[float, int, int] | None = None  # (match share, header fields, -order)
     best_delimiter = ","
@@ -508,6 +534,39 @@ def _detect_delimiter(text_sample: str, *, complete: bool = False) -> tuple[str,
         f"Could not detect the delimiter from the data (rows have different numbers "
         f"of fields); guessed {best_delimiter!r}: it splits the header into "
         f"{best[1]} columns and {best[0]:.0%} of the first data rows match."
+    )
+
+
+def _break_delimiter_tie(
+    text_sample: str, sniffed: str, *, complete: bool
+) -> tuple[str, str | None]:
+    """Check Sniffer's pick against the other candidates.
+
+    Sniffer prefers the comma whenever both it and, say, ``;`` give every line
+    the same number of fields, as in ``id;Preis, EUR`` with values like
+    ``2,5``. If another candidate scores at least as well (`_score_delimiter`),
+    the choice is ambiguous: the candidate least likely to occur inside values
+    wins (`TIE_PREFERENCE`), with a warning.
+
+    Returns:
+        The delimiter, and a warning if the choice was ambiguous (else None).
+    """
+    own = _score_delimiter(text_sample, sniffed, complete=complete)
+    if own is None:
+        return sniffed, None
+    tied = [sniffed] + [
+        c
+        for c in CANDIDATE_DELIMITERS
+        if c != sniffed
+        and (score := _score_delimiter(text_sample, c, complete=complete)) is not None
+        and score >= own
+    ]
+    if len(tied) == 1:
+        return sniffed, None
+    choice = min(tied, key=TIE_PREFERENCE.index)
+    return choice, (
+        f"The delimiter is ambiguous: {', '.join(repr(c) for c in tied)} fit the "
+        f"header and the data equally well. Used {choice!r}; check the columns."
     )
 
 
@@ -600,52 +659,89 @@ def _check_header(text_sample: str, delimiter: str) -> list[str]:
     return warnings
 
 
-def _count_unread_rows(
+@contextmanager
+def _large_csv_fields() -> Iterator[None]:
+    """Lift the csv module's field-size limit for the duration of a read.
+
+    The limit is global state in the csv module (pandas' python engine uses it
+    too), so the previous value is always restored, even after an error.
+    """
+    previous = csv.field_size_limit()
+    csv.field_size_limit(MAX_CSV_FIELD_SIZE)
+    try:
+        yield
+    finally:
+        csv.field_size_limit(previous)
+
+
+def _csv_lines(path: Path, encoding: str) -> Iterator[str]:
+    """Yield the file's lines as `csv.reader` expects them (``newline=""``).
+
+    UTF-8 is opened as ``utf-8-sig`` so a BOM is dropped, as pandas does. For
+    Latin-1, a UTF-8 BOM decoded as ``"ï»¿"`` is removed from the first line,
+    otherwise it would hide a quote at the start of the first header name.
+    """
+    if encoding == "utf-8":
+        encoding = "utf-8-sig"
+    with path.open("r", encoding=encoding, newline="") as f:
+        first = next(f, "")
+        if encoding == "latin-1" and first.startswith(_UTF8_BOM_AS_LATIN1):
+            first = first[len(_UTF8_BOM_AS_LATIN1):]
+        yield from itertools.chain([first], f)
+
+
+def _check_quoting(
     path: Path, delimiter: str, encoding: str, *, skiprows: int, rows_read: int
-) -> tuple[int, str]:
-    """Count data records that pandas silently failed to read.
+) -> tuple[int, str | None, bool]:
+    """Find broken quoting, and data records pandas silently failed to read.
 
     pandas' python engine drops a record with broken quoting (``"a"b,c``)
-    without calling `on_bad_lines`, and stops early when the broken record is
-    the last one. To catch this, the file is parsed again with `csv.reader`,
-    which reads such records leniently, and its record count is compared with
-    what pandas returned (rows plus malformed rows, header excluded).
+    without calling `on_bad_lines` when it is the last one, and an unclosed
+    quote swallows every line after it. Two extra passes with `csv.reader`
+    catch both:
+
+    1. A lenient pass counts the records; fewer rows from pandas (plus its
+       malformed rows, header excluded) means records were lost.
+    2. A strict pass finds the first broken record and where it starts and
+       ends, so the warning points at the right lines.
 
     Args:
         path: The CSV file.
         delimiter: The detected delimiter.
-        encoding: The encoding pandas used ("utf-8" covers UTF-8 with BOM too).
+        encoding: The encoding pandas used, as reported by `_read_with_fallback`.
         skiprows: Blank lines before the header (one record each for csv).
         rows_read: Data rows pandas returned, including blank-line rows, plus
             the malformed rows it reported.
 
     Returns:
-        (number of records pandas lost, a short description of the first broken
-        record such as "line 4: ',' expected after '\"'"). (0, "") when nothing
-        was lost or the file can't be re-checked; the pandas result then stands.
+        (records pandas lost, a description of the first broken record such as
+        "line 4: ',' expected after '\"'" or "lines 4-1004: unexpected end of
+        data", or None, and whether the file could be re-checked at all).
     """
     try:
-        with path.open("r", encoding=encoding, newline="") as f:
-            total = sum(1 for _ in csv.reader(f, delimiter=delimiter))
+        with _large_csv_fields():
+            total = sum(1 for _ in csv.reader(_csv_lines(path, encoding), delimiter=delimiter))
     except (OSError, UnicodeDecodeError, csv.Error):
-        # csv refuses e.g. fields over its size limit; keep pandas' result.
-        return 0, ""
+        return 0, None, False
 
-    unread = total - skiprows - 1 - rows_read
-    if unread <= 0:
-        return 0, ""
-
-    detail = "the broken line could not be located"
+    problem: str | None = None
+    start_line = 1  # first physical line of the record being read
     try:
-        with path.open("r", encoding=encoding, newline="") as f:
-            reader = csv.reader(f, delimiter=delimiter, strict=True)
+        with _large_csv_fields():
+            reader = csv.reader(_csv_lines(path, encoding), delimiter=delimiter, strict=True)
             for _ in reader:
-                pass
+                start_line = reader.line_num + 1
     except csv.Error as exc:
-        detail = f"first one near line {reader.line_num}: {exc}"
+        end_line = max(reader.line_num, start_line)
+        where = f"line {start_line}" if end_line == start_line else f"lines {start_line}-{end_line}"
+        problem = f"{where}: {exc}"
     except (OSError, UnicodeDecodeError):
         pass
-    return unread, detail
+
+    unread = max(total - skiprows - 1 - rows_read, 0)
+    if unread and problem is None:
+        problem = "the broken line could not be located"
+    return unread, problem, True
 
 
 def _read_with_fallback(
@@ -725,8 +821,9 @@ def _read_csv(
     try:
         # index_col=False: with skip_blank_lines=False, a blank line right after
         # the header otherwise makes pandas fail while guessing an index.
-        names = pd.read_csv(path, nrows=0, index_col=False, **options).columns
-        df = pd.read_csv(path, header=None, on_bad_lines=collect_bad_row, **options)
+        with _large_csv_fields():  # long values must load, not fail or vanish
+            names = pd.read_csv(path, nrows=0, index_col=False, **options).columns
+            df = pd.read_csv(path, header=None, on_bad_lines=collect_bad_row, **options)
     except UnicodeDecodeError:
         raise  # handled by _read_with_fallback
     except pd.errors.EmptyDataError as exc:

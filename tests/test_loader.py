@@ -505,6 +505,20 @@ def test_header_with_delimiter_but_unsplit_rows_warns(tmp_path):
 
 
 @pytest.mark.parametrize(
+    "content",
+    ["id;Preis, EUR\n1;2,5\n2;3,75\n3;1,25\n", "id;name;Preis, EUR\n1;a;2,5\n2;b;3,75\n"],
+)
+def test_semicolon_wins_tie_with_comma_and_warns(tmp_path, content):
+    """Both delimiters give consistent field counts; ';' is preferred because
+    commas are common inside values (decimal commas)."""
+    result = load_csv(write(tmp_path, content))
+
+    assert result.delimiter == ";"
+    assert result.df["id"].tolist()[:2] == ["1", "2"]
+    assert any("ambiguous" in w for w in result.warnings)
+
+
+@pytest.mark.parametrize(
     ("content", "delimiter", "columns"),
     [
         ("price;eur\n1\n", ",", ["price;eur"]),  # one data row, one column
@@ -588,6 +602,44 @@ def test_broken_quoting_on_last_line_is_counted(tmp_path, content):
     assert result.df["c0"].tolist() == ["1", "3"]
     assert result.skipped_rows == 1
     assert any("broken quoting" in w and "line 4" in w for w in result.warnings)
+
+
+def test_unclosed_quote_past_csv_field_limit_is_reported(tmp_path):
+    """An unclosed quote that swallows more than csv's default 128 KiB limit
+    used to lose thousands of rows silently."""
+    good = "".join(f"{i},{i}\n" for i in range(10))
+    after = "".join(f"{i},{'v' * 40}\n" for i in range(4000))  # about 180 KB
+    result = load_csv(write(tmp_path, "a,b\n" + good + '"x,1\n' + after))
+
+    assert result.df["a"].tolist() == [str(i) for i in range(10)]
+    assert result.skipped_rows == 1
+    assert any("broken quoting" in w and "lines 12-" in w for w in result.warnings)
+
+
+def test_unclosed_quote_reports_where_it_starts(tmp_path):
+    after = "".join(f"{i},{i}\n" for i in range(1000))
+    result = load_csv(write(tmp_path, 'a,b\n1,1\n2,2\n"x,1\n' + after))
+
+    assert any("lines 4-1004" in w for w in result.warnings)
+
+
+def test_bom_file_with_quoted_line_break_in_first_name_is_not_broken(tmp_path):
+    raw = '"a\nx",b\n1,2\n3,4\n'.encode("utf-8-sig")
+    result = load_csv(write(tmp_path, raw))
+
+    assert list(result.df.columns) == ["a\nx", "b"]
+    assert result.skipped_rows == 0
+    assert result.warnings == []
+
+
+def test_value_longer_than_csv_field_limit_loads(tmp_path):
+    import csv
+
+    long_value = "x" * 200_000
+    result = load_csv(write(tmp_path, f"a,b\n1,{long_value}\n2,y\n"))
+
+    assert result.df["b"].tolist() == [long_value, "y"]
+    assert csv.field_size_limit() == 131072  # the global limit is restored
 
 
 def test_valid_quotes_are_not_reported_as_broken(tmp_path):
