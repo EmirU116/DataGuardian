@@ -4,6 +4,8 @@ Each test writes a small CSV into pytest's temporary directory, so the exact
 bytes on disk (encoding, delimiter, malformed rows) are controlled by the test.
 """
 
+import os
+import time
 from pathlib import Path
 
 import pandas as pd
@@ -431,6 +433,94 @@ def test_very_wide_file(tmp_path):
 
     assert df.shape == (1, 2000)
     assert df["c1999"].tolist() == ["1999"]
+
+
+# --- Delimiter guessed from the header ----------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("content", "delimiter"),
+    [
+        ("id|name|age\n1|x|3\n2|y\n3|z|5\n", "|"),  # a short row
+        ("a;b\n1;2\n3;4;5\n6;7\n", ";"),  # an extra field
+        ("a\tb\tc\n1\t2\t3\n4\t5\n6\t7\t8\n", "\t"),  # a short row
+    ],
+)
+def test_irregular_file_still_gets_the_right_delimiter(tmp_path, content, delimiter):
+    """Sniffer fails on irregular lines; the header decides, with a warning."""
+    result = load_csv(write(tmp_path, content))
+
+    assert result.delimiter == delimiter
+    assert len(result.df.columns) > 1
+    assert any("guessed" in w for w in result.warnings)
+
+
+def test_quoted_delimiter_in_header_does_not_count(tmp_path):
+    result = load_csv(write(tmp_path, '"a;b",c\n1;2,3\n4,5,6\n'))
+    assert result.delimiter == ","
+
+
+def test_single_column_file_gets_no_delimiter_warning(tmp_path):
+    result = load_csv(write(tmp_path, "name\nAl\n\nBo\n"))
+    assert not any("guessed" in w for w in result.warnings)
+
+
+# --- Very long headers ---------------------------------------------------------
+
+
+def test_long_header_with_quoted_line_break(tmp_path):
+    """A line break inside a quoted name doesn't end the header early."""
+    names = ['"multi\nline"'] + [f"c{i}" for i in range(11000)]
+    header = ";".join(names)
+    assert len(header) > SAMPLE_SIZE_BYTES
+    row = ";".join("1" * len(names))
+    result = load_csv(write(tmp_path, f"{header}\n{row}\n"))
+
+    assert result.delimiter == ";"
+    assert result.df.shape == (1, len(names))
+    assert result.df.columns[0] == "multi\nline"
+
+
+def test_long_header_without_line_break_is_fast(tmp_path):
+    """Counting blank lines used to be quadratic on a long line (27 s)."""
+    header = ",".join(f"c{i}" for i in range(20000))
+    start = time.perf_counter()
+    with pytest.raises(DataLoadError, match="no data rows"):
+        load_csv(write(tmp_path, header))
+    assert time.perf_counter() - start < 10
+
+
+# --- More encoding edge cases ---------------------------------------------------
+
+
+def test_bom_then_blank_lines_then_latin1_byte(tmp_path):
+    raw = b"\xef\xbb\xbf\n\nname,city\nz,\xe9\n"
+    result = load_csv(write(tmp_path, raw))
+
+    assert result.encoding == "latin-1"
+    assert list(result.df.columns) == ["name", "city"]
+    assert result.df["city"].tolist() == ["é"]
+    assert result.blank_lines == 2
+
+
+def test_truncated_utf16_file_is_rejected(tmp_path):
+    raw = "a,b\n1,2\n".encode("utf-16") + b"\x00"
+    with pytest.raises(DataLoadError, match="UTF-16"):
+        load_csv(write(tmp_path, raw))
+
+
+@pytest.mark.skipif(
+    not hasattr(os, "geteuid") or os.geteuid() == 0,
+    reason="file permissions are not enforced for root or on this platform",
+)
+def test_unreadable_file(tmp_path):
+    path = write(tmp_path, "a\n1\n")
+    path.chmod(0)
+    try:
+        with pytest.raises(DataLoadError, match="Could not read"):
+            load_csv(path)
+    finally:
+        path.chmod(0o600)
 
 
 # --- Files that cannot be loaded ---------------------------------------------

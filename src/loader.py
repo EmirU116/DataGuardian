@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import codecs
 import csv
+import io
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -110,8 +111,9 @@ def load_csv(
         A `LoadResult` with the DataFrame and loading metadata.
 
     Raises:
-        DataLoadError: The file is missing, not a CSV, empty, binary, has a header
-            but no data rows, or cannot be parsed.
+        DataLoadError: The file is missing, not a CSV, empty, binary, a truncated
+            UTF-16 file, has a header but no data rows, has only rows with more
+            fields than the header, or cannot be parsed.
     """
     path = Path(path)
     file_size = _validate_path(path)
@@ -130,7 +132,9 @@ def load_csv(
     # header_text starts at the header, even if it lies beyond the first sample.
     leading_blank, header_text = _read_header_text(path, encoding)
 
-    delimiter = _detect_delimiter(header_text)
+    delimiter, delimiter_warning = _detect_delimiter(header_text)
+    if delimiter_warning:
+        warnings.append(delimiter_warning)
     warnings.extend(_check_header(header_text, delimiter))
 
     df, bad_rows, encoding = _read_with_fallback(
@@ -255,19 +259,25 @@ def _read_header_text(path: Path, encoding: str) -> tuple[int, str]:
     text = ""
     header_offset: int | None = None
     header_line_complete = False
+    in_quotes = False  # inside a quoted header field at the end of the text so far
     leading_blank = 0
     try:
         with path.open("rb") as f:
             while True:
                 chunk = f.read(SAMPLE_SIZE_BYTES)
                 piece = decoder.decode(chunk, final=not chunk)
+                if not text and encoding == "latin-1" and piece.startswith(_UTF8_BOM_AS_LATIN1):
+                    # A UTF-8 BOM decoded as Latin-1 is "ï»¿", which would make a
+                    # blank first line look like the header. Removing it changes
+                    # no line count, so `skiprows` still matches pandas.
+                    piece = piece[len(_UTF8_BOM_AS_LATIN1):]
                 text += piece
                 # Only the new piece needs checking, which keeps this linear.
                 if header_offset is None and piece.strip():
                     leading_blank, header_offset = _count_leading_blank_lines(text)
-                    header_line_complete = _has_line_break(text, header_offset)
+                    header_line_complete, in_quotes = _scan_header_end(text, header_offset, False)
                 elif header_offset is not None and not header_line_complete:
-                    header_line_complete = _has_line_break(piece, 0)
+                    header_line_complete, in_quotes = _scan_header_end(piece, 0, in_quotes)
                 if not chunk:
                     break
                 # Stop once the whole header line is in, plus a sample's worth of
@@ -285,9 +295,32 @@ def _read_header_text(path: Path, encoding: str) -> tuple[int, str]:
     return leading_blank, text[header_offset:]
 
 
-def _has_line_break(text: str, start: int) -> bool:
-    """Return True if `text` contains a line break at or after `start`."""
-    return "\n" in text[start:] or "\r" in text[start:]
+# A double quote, or a line break: what decides where a CSV record ends.
+_QUOTE_OR_BREAK = re.compile(r'["\r\n]')
+
+
+def _scan_header_end(text: str, start: int, in_quotes: bool) -> tuple[bool, bool]:
+    """Look for the end of the header record in `text` from `start` on.
+
+    The header ends at the first line break *outside* double quotes; a line
+    break inside a quoted name is part of the name. Every ``"`` toggles the
+    quoted state (an escaped ``""`` toggles twice, so it cancels out).
+
+    Args:
+        text: The text to scan.
+        start: Where to start scanning.
+        in_quotes: Whether the scan starts inside a quoted field (carried over
+            from the previous piece of the file).
+
+    Returns:
+        (whether the header record is complete, the quoted state at the end).
+    """
+    for match in _QUOTE_OR_BREAK.finditer(text, start):
+        if match.group() == '"':
+            in_quotes = not in_quotes
+        elif not in_quotes:
+            return True, in_quotes
+    return False, in_quotes
 
 
 # One line and its terminator. pandas' python engine ends a line at "\r\n", a
@@ -369,11 +402,18 @@ def _handle_blank_lines(df: pd.DataFrame) -> tuple[pd.DataFrame, int, int]:
     return df, dropped, 0
 
 
-def _detect_delimiter(text_sample: str) -> str:
-    """Detect the field separator, defaulting to a comma.
+def _detect_delimiter(text_sample: str) -> tuple[str, str | None]:
+    """Detect the field separator.
 
-    Sniffer fails on single-column files (there is no delimiter to find); a comma
-    is the right default there.
+    `csv.Sniffer` is tried first. It fails when lines don't all have the same
+    number of fields (a short row, an extra field, a blank line), and on
+    single-column files. Then the header record decides: the candidate that
+    splits it into the most fields wins, and a warning says the delimiter was
+    guessed. If no candidate splits the header, the file has one column and the
+    comma is used, with no warning.
+
+    Returns:
+        The delimiter, and a warning message if it was guessed (else None).
     """
     # Only sniff complete lines so a line cut off at the end of the sample does
     # not confuse the field counts.
@@ -382,9 +422,28 @@ def _detect_delimiter(text_sample: str) -> str:
         lines = lines[:-1]
     try:
         dialect = csv.Sniffer().sniff("\n".join(lines), delimiters=CANDIDATE_DELIMITERS)
-        return dialect.delimiter
+        return dialect.delimiter, None
     except csv.Error:
-        return ","
+        pass
+
+    best, best_count = ",", 1
+    for candidate in CANDIDATE_DELIMITERS:
+        try:
+            # csv.reader reads one full record, so quoted delimiters and quoted
+            # line breaks in the header are handled.
+            fields = next(csv.reader(io.StringIO(text_sample, newline=""), delimiter=candidate))
+        except (StopIteration, csv.Error):
+            continue
+        if len(fields) > best_count:
+            best, best_count = candidate, len(fields)
+
+    if best_count == 1:
+        return ",", None  # one column: there is no delimiter to find
+    return best, (
+        f"Could not detect the delimiter from the data (rows have different numbers "
+        f"of fields); guessed {best!r} because it splits the header into "
+        f"{best_count} columns."
+    )
 
 
 def _check_header(text_sample: str, delimiter: str) -> list[str]:
@@ -433,7 +492,13 @@ def _read_with_fallback(
     """
     try:
         df, bad_rows = _read_csv(path, delimiter, encoding, skiprows)
-    except UnicodeDecodeError:
+    except UnicodeDecodeError as exc:
+        if encoding == "utf-16":
+            # Latin-1 would "succeed" on UTF-16 bytes but produce garbage.
+            raise DataLoadError(
+                f"File looks like UTF-16 but could not be decoded; it may be "
+                f"truncated or corrupt: {path}"
+            ) from exc
         # The sample was valid UTF-8 but an invalid byte appears later on.
         encoding = "latin-1"
         df, bad_rows = _read_csv(path, delimiter, encoding, skiprows)
