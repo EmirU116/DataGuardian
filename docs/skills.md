@@ -17,6 +17,9 @@ A skill may call agents. For example, a "finish a feature" routine can call `qa-
 | Skill | What it does | When it is used | Origin |
 |---|---|---|---|
 | `create-skill` | Writes a project skill from an approved candidate, updates this table and the candidate log, and ships it as a chore. | When the user approves a candidate, or asks to make something a skill. | Set up with the skills system (2026-11-05). |
+| `finish-feature` | Definition of done for a feature or fix branch: branch-state check, tests (including strict encoding), commit, `qa-auditor` and its fix loop, `pr-creator`, then `watch-pr`. | When a feature or fix branch is complete, or the user says "finish this" or "open the PR". | First `skill-scout` run (2026-11-05). |
+| `watch-pr` | Background watch on a PR's CI and merge state. After the merge: clean up, check the `main` run, run `skill-scout`, start the next plan item. | Right after a PR is opened, or when asked to "watch the PR". | First `skill-scout` run (2026-11-05). |
+| `add-agent` | Adds a single-purpose agent to `.claude/agents/` with minimal tools, registers it in the docs, and shows how to call it before a session restart. | When asked to add an agent or role. | First `skill-scout` run (2026-11-05). |
 
 ## How repeated tasks become skills
 
