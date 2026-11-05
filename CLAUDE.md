@@ -28,7 +28,7 @@ The repo currently holds only `README.md` and this file. No source code, depende
 
 ## Codebase rules
 - Before writing any code for a feature, you MUST make a plan first. The plan covers worst-case scenarios and how the feature fits the existing system and these rules.
-  - Exception: small changes, such as editing `.md` files, do not need a plan and may be committed directly to `main` without a feature branch.
+- Exception: small changes, such as editing `.md` files, do not need a plan and may be committed directly to `main` without a feature branch.
 - Comment the code for readability, and give functions/modules docstrings explaining how the code works.
 - Error handling is required, especially when working with APIs.
 - Write tests for functions that contain business logic, complex algorithms or error-prone conditions.
@@ -42,6 +42,7 @@ Claude may create PRs. Use the `pr-creator` agent (`.claude/agents/pr-creator.md
 ## Agents
 - Multi-agent work is NOT allowed when developing a feature: do not spawn parallel or fan-out subagents to plan, write or review feature code. Work on a feature in a single session so the user stays in control of what changes.
 - Allowed: single-purpose agents that are part of the project's own system and help the user, such as `pr-creator`. New agents of this kind go in `.claude/agents/` and must focus on one specific task.
+Never work directly on `main`. Create a branch for each feature, open a PR into `main`, `dev` or `testing` when it is done, and delete the branch once the PR is accepted.
 
 ## Documentation
 - `./docs/workflow.md`: workflows (such as the git branch workflow above) with an explanation of the problem each one solves and why it is used.
