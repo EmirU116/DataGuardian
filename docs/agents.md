@@ -22,7 +22,7 @@ The results are risk indicators to review, not a verdict: whether a gap is unfai
 | `docs-sync-checker` | Checks that `CLAUDE.md`, `README.md` and `docs/` still match the code: paths, function names, commands and project status. | After a feature lands, or before a PR that changes structure. | No (reports drift). |
 
 ## How to use them
-Ask for the task in plain words, such as "profile the dataset in data/raw-data" or "clean up merged branches", or name the agent: "use dependency-checker". Claude starts the agent, and it reports back when done. Agents don't run automatically or watch GitHub.
+Ask for the task in plain words, such as "profile the dataset in data/raw-data" or "clean up merged branches", or name the agent: "use dependency-checker". Claude starts the agent, and it reports back when done. Two agents also run as part of finishing a feature: `qa-auditor`, then `pr-creator` (see `docs/workflow.md`, section 4). Agents never run on their own or watch GitHub; Claude starts them during a session.
 
 ## Adding a new agent
 1. Make sure the task is one specific job that helps the user and doesn't involve writing or reviewing feature code.
