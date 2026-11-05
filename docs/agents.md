@@ -26,6 +26,8 @@ The results are risk indicators to review, not a verdict: whether a gap is unfai
 Ask for the task in plain words, such as "profile the dataset in data/raw-data" or "clean up merged branches", or name the agent: "use dependency-checker". Claude starts the agent, and it reports back when done. Two agents also run as part of finishing a feature: `qa-auditor`, then `pr-creator` (see `docs/workflow.md`, section 4). Agents never run on their own or watch GitHub; Claude starts them during a session.
 
 ## Adding a new agent
+The `add-agent` skill walks through these steps, including how to call a new agent before the session restarts.
+
 1. Make sure the task is one specific job that helps the user and doesn't involve writing or reviewing feature code.
 2. Add `.claude/agents/<name>.md` with `name`, `description` and `tools` in the frontmatter. Give it only the tools it needs (read-only agents get no edit tools).
 3. Add a row to the table above. `docs-sync-checker` reports any agent missing from this table.
