@@ -88,3 +88,40 @@ python3 -m venv .venv
 **Why we use it:**
 - A per-project `.venv/` keeps dependencies isolated.
 - `requirement.txt` pins the version ranges.
+
+## 7. Continuous integration (CI)
+
+**What:** `.github/workflows/tests.yml` runs the tests on GitHub:
+- on every PR into `main`, `dev` or `testing`;
+- on every push to `main`;
+- by hand from the repository's **Actions** tab.
+
+It sets up Python 3.14, creates `.venv`, installs `requirement.txt` and runs `.venv/bin/pytest -q`: the same commands as `CLAUDE.md`. The result appears on the PR as the `Tests / pytest` check.
+
+Tests must build their own fixtures (pytest's `tmp_path`) and never read files under `data/`, because `data/` isn't in git and doesn't exist in CI.
+
+**Optional, recommended:** make the check required so a PR can't be merged while tests fail. On GitHub: **Settings → Branches → Add branch protection rule** (or **Rulesets**) for `main`, enable "Require status checks to pass", and select `pytest`. Only the repository owner can do this.
+
+**Problem it solves:** tests used to run only on the machine of whoever opened the PR. A missing package in `requirement.txt`, or a test that relied on a local file, passed there and broke for everyone else.
+
+**Why we use it:**
+- Every PR is tested in a clean environment, built only from what is in git.
+- The reviewer sees pass or fail on the PR without running anything.
+- `main` is re-tested after each merge.
+
+Plan and design decisions: `docs/ci-plan.md`.
+
+## 8. Watch and continue after a PR
+
+**What:** after Claude opens a PR, it keeps watching it in the same session:
+1. If the CI check fails, it fixes the problem on the branch and pushes again.
+2. When the user merges the PR, Claude deletes the local branch, updates `main`, and starts the next item in the current phase plan's "Suggested branch order". It goes through the full routine of section 4: plan, code, tests, QA and PR.
+3. If the PR is closed without merging, or changes are requested, Claude stops and asks.
+4. When the plan has no next item, Claude stops and reports that the phase is done.
+
+**Problem it solves:** without it, every merge needed a new prompt ("now do the next item") and work stalled until someone remembered.
+
+**Why we use it:**
+- Work keeps moving through the plan.
+- The user still reviews and merges every PR. Merging is the go-ahead for the next item.
+- **Limit:** the watch only runs while the Claude Code session is open. Nothing runs on GitHub on Claude's behalf.

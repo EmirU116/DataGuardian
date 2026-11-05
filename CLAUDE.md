@@ -58,6 +58,18 @@ When Claude is satisfied that a feature on its branch is complete, it does the f
 7. Open a PR with the `pr-creator` agent (`.claude/agents/pr-creator.md`). Pass it the test result, a summary of the changes, the QA verdict, and any remaining `minor` findings so the reviewer sees them.
 8. Give the user the PR link. The user reviews and merges every PR; Claude never merges one itself.
 
+### After a PR is opened (watch and continue)
+The user has agreed that Claude continues on its own after a PR, all the way to the next PR:
+1. Start a background watch on the PR in the same session (poll `gh pr view <n> --json state,reviewDecision` and `gh pr checks <n>` every few minutes).
+2. If the `Tests` CI check fails, fix it on the same branch and push again.
+3. When the PR is merged: delete the local branch (`git branch -d`), update `main` (`git pull --ff-only`), then start the next item in the "Suggested branch order" of the current phase plan (for example `docs/phase-1-plan.md`) and take it through the whole definition of done above, starting with its plan.
+4. If the PR is closed without merging, or the user requests changes, stop and ask the user.
+5. When the phase plan has no next item, stop and report that the phase is done.
+The watch only runs while the Claude Code session is open.
+
+### CI
+`.github/workflows/tests.yml` runs `.venv/bin/pytest -q` on every PR into `main`, `dev` or `testing` and on every push to `main`. Tests must not depend on files under `data/` (it is git-ignored); build fixtures with pytest's `tmp_path`. CI also turns any `open()` without an explicit `encoding=` into a failing test (`PYTHONWARNDEFAULTENCODING=1` plus the `filterwarnings` setting in `pyproject.toml`), so always pass `encoding=` when opening text files. Details: `docs/ci-plan.md` and `docs/workflow.md`.
+
 ## Agents
 - Multi-agent work is NOT allowed when developing a feature: do not spawn parallel or fan-out subagents to plan, write or review feature code. Work on a feature in a single session so the user stays in control of what changes.
 - Allowed: single-purpose agents that are part of the project's own system and help the user, such as `pr-creator`. New agents of this kind go in `.claude/agents/` and must focus on one specific task.
