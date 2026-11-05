@@ -47,7 +47,14 @@ The project uses a virtual environment in `.venv/` (the system Python does not a
 ## Git workflow
 Never work directly on `main` (except for the small changes allowed above). Create a branch for each feature, open a PR into `main`, `dev` or `testing` when it is done, and delete the branch once the PR is accepted.
 
-Claude may create PRs. Use the `pr-creator` agent (`.claude/agents/pr-creator.md`) for this; it handles only pushing the branch and opening the PR.
+### Finishing a feature (definition of done)
+When Claude is satisfied that a feature on its branch is complete, it does the following without waiting to be asked:
+1. Write unit tests for the new code where the rule under "Codebase rules" requires them (business logic, complex algorithms, error-prone conditions). Docs-only changes need no tests.
+2. Run the full suite: `.venv/bin/pytest`.
+3. If any test fails, fix the code (or the test, if the test is wrong) and run the suite again. Never open a PR with failing tests. If the failure cannot be fixed, stop and report it to the user instead.
+4. Commit the work on the feature branch.
+5. When everything passes, open a PR with the `pr-creator` agent (`.claude/agents/pr-creator.md`). Pass it the test result and a summary of the changes.
+6. Give the user the PR link. The user reviews and merges every PR; Claude never merges one itself.
 
 ## Agents
 - Multi-agent work is NOT allowed when developing a feature: do not spawn parallel or fan-out subagents to plan, write or review feature code. Work on a feature in a single session so the user stays in control of what changes.
