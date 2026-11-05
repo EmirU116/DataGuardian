@@ -43,20 +43,24 @@ Large plans go in `docs/` (e.g. `docs/phase-1-plan.md`).
 
 **Why we use it:** every change stays visible and reviewable by the user.
 
-## 4. Finishing a feature: test, then PR
+## 4. Finishing a feature: test, QA, then PR
 
 **What:** when Claude is satisfied that a feature on its branch is complete, it does the following on its own:
 1. Writes unit tests where needed (business logic, complex algorithms, error-prone conditions).
 2. Runs the full suite with `.venv/bin/pytest`.
 3. If tests fail, it fixes them and runs the suite again. If a failure can't be fixed, it stops and reports to the user, and no PR is opened.
-4. Once all tests pass, it commits and opens a PR with the `pr-creator` agent. `pr-creator` runs the tests once more and refuses to open the PR if any fail.
-5. The user reviews the PR and merges it. Claude never merges.
+4. Once all tests pass, it commits the work.
+5. It runs the `qa-auditor` agent on the code, pipeline and algorithms. It also covers data and bias when a dataset is present and the feature touches data handling. Docs-only branches skip this step.
+6. It fixes every `blocker` and `major` finding, then runs the tests and the QA again. If one can't be fixed, it stops and reports to the user, and no PR is opened.
+7. It opens a PR with the `pr-creator` agent, which runs the tests once more and refuses to open the PR if any fail. The PR description includes the QA verdict and any remaining `minor` findings.
+8. The user reviews the PR and merges it. Claude never merges.
 
-**Problem it solves:** before this rule, "done" depended on someone remembering to write tests, run them and ask for a PR. That made it easy for untested or broken code to reach review, or for finished work to sit on a branch.
+**Problem it solves:** before this rule, "done" depended on someone remembering to write tests, run them, check quality and ask for a PR. That made it easy for untested or broken code, or code that quietly mishandles data, to reach review, or for finished work to sit on a branch.
 
 **Why we use it:**
-- Every PR arrives with passing tests, so review time goes to the design and the code, not to finding failing tests.
-- The test run happens twice: once by Claude while working and once by `pr-creator` just before the PR is opened.
+- Every PR arrives with passing tests and a QA report, so review time goes to the design and the code, not to finding failing tests.
+- `qa-auditor` catches what unit tests miss. That includes edge cases nobody wrote a test for, checks that miscount planted defects, and cleaning that would remove far more rows from one group than another.
+- The tests run at three points: by Claude while working, again after QA fixes, and by `pr-creator` just before the PR is opened.
 - The user stays in control: nothing reaches `main` without the user's review and merge.
 
 ## 5. Getting the sample dataset
