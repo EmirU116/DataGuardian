@@ -53,8 +53,10 @@ When Claude is satisfied that a feature on its branch is complete, it does the f
 2. Run the full suite: `.venv/bin/pytest`.
 3. If any test fails, fix the code (or the test, if the test is wrong) and run the suite again. Never open a PR with failing tests. If the failure cannot be fixed, stop and report it to the user instead.
 4. Commit the work on the feature branch.
-5. When everything passes, open a PR with the `pr-creator` agent (`.claude/agents/pr-creator.md`). Pass it the test result and a summary of the changes.
-6. Give the user the PR link. The user reviews and merges every PR; Claude never merges one itself.
+5. Run the `qa-auditor` agent on the branch with the areas `code`, `pipeline` and `algorithms`. Add `data` and `bias` when a dataset exists under `data/raw-data/` and the feature changes how data is loaded, checked or reported. Docs-only branches skip this step.
+6. Fix every `blocker` and `major` finding in this session, then repeat steps 2–5. If a blocker or major can't be fixed, stop and report it to the user instead of opening a PR.
+7. Open a PR with the `pr-creator` agent (`.claude/agents/pr-creator.md`). Pass it the test result, a summary of the changes, the QA verdict, and any remaining `minor` findings so the reviewer sees them.
+8. Give the user the PR link. The user reviews and merges every PR; Claude never merges one itself.
 
 ## Agents
 - Multi-agent work is NOT allowed when developing a feature: do not spawn parallel or fan-out subagents to plan, write or review feature code. Work on a feature in a single session so the user stays in control of what changes.

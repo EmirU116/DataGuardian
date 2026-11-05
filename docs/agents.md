@@ -14,11 +14,11 @@ The results are risk indicators to review, not a verdict: whether a gap is unfai
 
 | Agent | What it does | When it is used | Can change things? |
 |---|---|---|---|
-| `pr-creator` | Runs the tests, pushes the branch and opens a PR. | When a feature is finished and its tests pass (see `docs/workflow.md`, section 4). | Pushes a branch and opens a PR. Never edits files. |
+| `pr-creator` | Runs the tests, pushes the branch and opens a PR. | When a feature is finished, its tests pass and QA has no blockers or majors (see `docs/workflow.md`, section 4). | Pushes a branch and opens a PR. Never edits files. |
 | `branch-cleaner` | Deletes branches whose PR was merged, locally and on GitHub. | After the user merges a PR, or when asked to tidy branches. | Deletes merged branches only. Never edits files. |
 | `dataset-profiler` | Loads one CSV with `load_csv()` and reports size, encoding, delimiter, columns and loader warnings. | When a new dataset is added to `data/` and you want a first look. | No (read-only). |
 | `dependency-checker` | Compares third-party imports in `src/`, `tests/` and `notebooks/` with `requirement.txt`. | Before a PR that adds imports, or when an install fails. | No (reports and suggests lines). |
-| `qa-auditor` | Quality assurance: data integrity, pipeline integrity (raw data untouched, no silent row loss), code and test gaps, algorithmic behavior (planted defects, invariance, determinism) and bias testing (representation, data quality and cleaning impact by group, outcome gaps, proxies). | Before a PR that changes checks or the pipeline, when a new dataset is analyzed, or when asked for a QA or bias review. | No (reports; the main session fixes). |
+| `qa-auditor` | Quality assurance: data integrity, pipeline integrity (raw data untouched, no silent row loss), code and test gaps, algorithmic behavior (planted defects, invariance, determinism) and bias testing (representation, data quality and cleaning impact by group, outcome gaps, proxies). | Automatically before every feature PR (see `docs/workflow.md`, section 4), when a new dataset is analyzed, or when asked for a QA or bias review. | No (reports; the main session fixes). |
 | `docs-sync-checker` | Checks that `CLAUDE.md`, `README.md` and `docs/` still match the code: paths, function names, commands and project status. | After a feature lands, or before a PR that changes structure. | No (reports drift). |
 
 ## How to use them
