@@ -28,8 +28,11 @@ How it works
      record, so it is dropped;
    - in a single-column file, a blank line between values *is* a value (an empty
      one), so it is kept as ``""``; blank lines at the very end are dropped.
-   Every dropped blank line is counted in `LoadResult.blank_lines`, so each line
-   of the file is accounted for: rows loaded + `skipped_rows` + `blank_lines`.
+   Every dropped blank line is counted in `LoadResult.blank_lines`, so each
+   record of the file is accounted for: rows loaded + `skipped_rows` +
+   `blank_lines`. (A record is usually one line; a record with an unclosed
+   quote can span many lines and counts once, and its warning names the line
+   range it covers.)
 
 Files that cannot be analyzed raise `DataLoadError` with a readable message.
 Problems that still allow analysis (Latin-1 fallback, skipped rows, blank lines,
