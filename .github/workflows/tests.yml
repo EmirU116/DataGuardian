@@ -27,8 +27,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
-      # Same default text encoding as a typical local setup.
-      PYTHONUTF8: "1"
+      # Warn on open() calls without an explicit encoding=; pyproject.toml turns the
+      # warning into a test failure, so code that would break on non-UTF-8 systems is caught.
+      PYTHONWARNDEFAULTENCODING: "1"
       PIP_DISABLE_PIP_VERSION_CHECK: "1"
 
     steps:

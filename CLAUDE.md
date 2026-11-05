@@ -56,7 +56,7 @@ When Claude is satisfied that a feature on its branch is complete, it does the f
 5. Run the `qa-auditor` agent on the branch with the areas `code`, `pipeline` and `algorithms`. Add `data` and `bias` when a dataset exists under `data/raw-data/` and the feature changes how data is loaded, checked or reported. Docs-only branches skip this step.
 6. Fix every `blocker` and `major` finding in this session, then repeat steps 2–5. If a blocker or major can't be fixed, stop and report it to the user instead of opening a PR.
 7. Open a PR with the `pr-creator` agent (`.claude/agents/pr-creator.md`). Pass it the test result, a summary of the changes, the QA verdict, and any remaining `minor` findings so the reviewer sees them.
-8. Give the user the PR link.
+8. Give the user the PR link. The user reviews and merges every PR; Claude never merges one itself.
 
 ### After a PR is opened (watch and continue)
 The user has agreed that Claude continues on its own after a PR, all the way to the next PR:
@@ -68,7 +68,7 @@ The user has agreed that Claude continues on its own after a PR, all the way to 
 The watch only runs while the Claude Code session is open.
 
 ### CI
-`.github/workflows/tests.yml` runs `.venv/bin/pytest -q` on every PR into `main`, `dev` or `testing` and on every push to `main`. Tests must not depend on files under `data/` (it is git-ignored); build fixtures with pytest's `tmp_path`. Details: `docs/ci-plan.md` and `docs/workflow.md`. The user reviews and merges every PR; Claude never merges one itself.
+`.github/workflows/tests.yml` runs `.venv/bin/pytest -q` on every PR into `main`, `dev` or `testing` and on every push to `main`. Tests must not depend on files under `data/` (it is git-ignored); build fixtures with pytest's `tmp_path`. CI also turns any `open()` without an explicit `encoding=` into a failing test (`PYTHONWARNDEFAULTENCODING=1` plus the `filterwarnings` setting in `pyproject.toml`), so always pass `encoding=` when opening text files. Details: `docs/ci-plan.md` and `docs/workflow.md`.
 
 ## Agents
 - Multi-agent work is NOT allowed when developing a feature: do not spawn parallel or fan-out subagents to plan, write or review feature code. Work on a feature in a single session so the user stays in control of what changes.

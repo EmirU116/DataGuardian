@@ -36,7 +36,7 @@ This branch also records the "watch and continue" routine: what Claude does afte
 | Wasted runs | Several pushes to one PR start overlapping runs. | `concurrency` cancels the older run on the same branch. |
 | Too many permissions | The workflow token can write to the repo. | `permissions: contents: read`. The job only reads code. |
 | PRs from forks | A fork PR could run untrusted code with secrets. | The workflow uses no secrets and only read permission, and it uses the `pull_request` trigger (not `pull_request_target`), so a fork's code never sees anything sensitive. |
-| Different encoding or locale on the runner | Loader tests about encodings behave differently. | Tests write bytes explicitly. Set `PYTHONUTF8=1` so the runner's default encoding matches a typical local setup. |
+| Hidden default-encoding bugs | Code that calls `open()` without `encoding=` works on Linux (UTF-8 default) but breaks for users on a non-UTF-8 Windows locale. | CI sets `PYTHONWARNDEFAULTENCODING=1`, and `pyproject.toml` turns `EncodingWarning` into an error, so such a call fails the tests. (Forcing `PYTHONUTF8=1` was rejected: it would hide these bugs instead of catching them.) Tests write bytes explicitly. |
 | CI can't be run locally | The workflow can only be fully tested on GitHub. | Locally: validate the YAML, and repeat the job's steps in a fresh virtual environment. On GitHub: the PR for this branch is the first real run, watched until it finishes. |
 
 ## How it fits the project rules
@@ -48,7 +48,7 @@ This branch also records the "watch and continue" routine: what Claude does afte
 
 ## Watch and continue (routine after a PR)
 Agreed with the user: after a PR is opened, Claude keeps going on its own.
-1. After `pr-creator` opens the PR, Claude starts a background watch on it in the same session (polling `gh pr view` every few minutes).
+1. After `pr-creator` opens the PR, Claude starts a background watch on it in the same session (polling `gh pr view <n> --json state,reviewDecision` and `gh pr checks <n>` every few minutes).
 2. If CI fails on the PR, Claude fixes it on the same branch and pushes again.
 3. When the user merges the PR, Claude deletes the local branch, updates `main`, and starts the next item in the "Suggested branch order" of the current phase plan. It goes all the way: plan, code, tests, QA, PR.
 4. If the PR is closed without merging, or the user requests changes, Claude stops and asks the user.
