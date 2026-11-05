@@ -2,3 +2,6 @@
 [tool.pytest.ini_options]
 pythonpath = ["."]
 testpaths = ["tests"]
+# An open() without encoding= raises EncodingWarning when PYTHONWARNDEFAULTENCODING=1
+# (set in CI); fail the test instead of only warning.
+filterwarnings = ["error::EncodingWarning"]

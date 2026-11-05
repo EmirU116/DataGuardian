@@ -38,16 +38,31 @@ The project uses a virtual environment in `.venv/` (the system Python does not a
 
 ## Codebase rules
 - Before writing any code for a feature, you MUST make a plan first. The plan covers worst-case scenarios and how the feature fits the existing system and these rules.
-- Exception: small changes, such as editing `.md` files, do not need a plan and may be committed directly to `main` without a feature branch.
+- Exception: chores (see "Chores" under Git workflow) do not need a plan; they are committed and pushed straight to `main`.
 - Comment the code for readability, and give functions/modules docstrings explaining how the code works.
 - Error handling is required, especially when working with APIs.
 - Write tests for functions that contain business logic, complex algorithms or error-prone conditions.
-- Repeated tasks or multi-step tasks should be turned into a skill.
+- Repeated tasks or multi-step tasks should be turned into a skill. Skills live in `.claude/skills/<name>/SKILL.md`; see "Skills" below and `docs/skills.md`.
 
 ## Git workflow
-Never work directly on `main` (except for the small changes allowed above). Create a branch for each feature, open a PR into `main`, `dev` or `testing` when it is done, and delete the branch once the PR is accepted.
+Never work directly on `main`, except for chores (below). Create a branch for each feature or fix, open a PR into `main`, `dev` or `testing` when it is done, and delete the branch once the PR is accepted.
+
+### Chores: straight to `main`, no PR
+A change is a chore only if **every** file it touches is one of:
+- any `*.md` file (`docs/`, `CLAUDE.md`, `README.md`, `.claude/agents/*.md`, `.claude/skills/**`);
+- `.gitignore`, `requirement.txt` or `pyproject.toml`.
+
+Everything else is a feature or fix and goes through a branch and PR: `src/`, `tests/`, `notebooks/`, `.github/workflows/`, and any change that mixes chore files with code (the whole change goes in the PR).
+
+To ship a chore:
+1. `git checkout main && git pull --ff-only`, then make the edit.
+2. If `requirement.txt` or `pyproject.toml` changed: run `.venv/bin/pip install -r requirement.txt` and `.venv/bin/pytest` first. If anything fails, stop and make it a PR instead.
+3. Commit, then `git push origin main`.
+4. Watch the `Tests` run the push starts (`gh run list --branch main --limit 1 --json status,conclusion`). If it fails, fix it at once with another chore commit, or revert.
+5. If the push is rejected (for example, branch protection was turned on), use a `chore/<name>` branch and a PR instead.
 
 ### Finishing a feature (definition of done)
+This applies to features and fixes, not chores.
 When Claude is satisfied that a feature on its branch is complete, it does the following without waiting to be asked:
 1. Write unit tests for the new code where the rule under "Codebase rules" requires them (business logic, complex algorithms, error-prone conditions). Docs-only changes need no tests.
 2. Run the full suite: `.venv/bin/pytest`.
@@ -58,13 +73,32 @@ When Claude is satisfied that a feature on its branch is complete, it does the f
 7. Open a PR with the `pr-creator` agent (`.claude/agents/pr-creator.md`). Pass it the test result, a summary of the changes, the QA verdict, and any remaining `minor` findings so the reviewer sees them.
 8. Give the user the PR link. The user reviews and merges every PR; Claude never merges one itself.
 
+### After a PR is opened (watch and continue)
+The user has agreed that Claude continues on its own after a PR, all the way to the next PR:
+1. Start a background watch on the PR in the same session: poll `gh pr view <n> --json state,reviewDecision,statusCheckRollup` every minute or two. (`gh pr checks <n> --json` is not supported by the installed `gh`.)
+2. If the `Tests` CI check fails, fix it on the same branch and push again.
+3. When the PR is merged: delete the local branch (`git branch -d`), update `main` (`git pull --ff-only`), run the `skill-scout` agent and post any new skill candidates (see "Skills"), then start the next item in the "Suggested branch order" of the current phase plan (for example `docs/phase-1-plan.md`) and take it through the whole definition of done above, starting with its plan.
+4. If the PR is closed without merging, or the user requests changes, stop and ask the user.
+5. When the phase plan has no next item, stop and report that the phase is done.
+The watch only runs while the Claude Code session is open.
+
+### CI
+`.github/workflows/tests.yml` runs `.venv/bin/pytest -q` on every PR into `main`, `dev` or `testing` and on every push to `main`. Tests must not depend on files under `data/` (it is git-ignored); build fixtures with pytest's `tmp_path`. CI also turns any `open()` without an explicit `encoding=` into a failing test (`PYTHONWARNDEFAULTENCODING=1` plus the `filterwarnings` setting in `pyproject.toml`), so always pass `encoding=` when opening text files. Details: `docs/ci-plan.md` and `docs/workflow.md`.
+
 ## Agents
 - Multi-agent work is NOT allowed when developing a feature: do not spawn parallel or fan-out subagents to plan, write or review feature code. Work on a feature in a single session so the user stays in control of what changes.
 - Allowed: single-purpose agents that are part of the project's own system and help the user, such as `pr-creator`. New agents of this kind go in `.claude/agents/` and must focus on one specific task.
 - Exception for QA: the `qa-auditor` agent may review feature code, data, pipelines and algorithms, including bias testing. It is read-only and only reports findings; the main session fixes them, so the user stays in control of every change.
-- Current agents: `pr-creator`, `branch-cleaner`, `dataset-profiler`, `dependency-checker`, `docs-sync-checker`, `qa-auditor`. See `docs/agents.md` for what each does and when to use it; add a row there for every new agent.
+- Current agents: `pr-creator`, `branch-cleaner`, `dataset-profiler`, `dependency-checker`, `docs-sync-checker`, `qa-auditor`, `skill-scout`. See `docs/agents.md` for what each does and when to use it; add a row there for every new agent.
+
+## Skills
+- Project skills live in `.claude/skills/<name>/SKILL.md` and are listed in `docs/skills.md`. A skill runs in the main session, so it fits the single-session rule; it may call the project's agents but can't override these rules.
+- **Discovery:** run the `skill-scout` agent after each merged PR and whenever the user asks ("find repeated tasks"). When Claude notices it is repeating a multi-step procedure during a session, it adds a `proposed` entry to `docs/skill-candidates.md`.
+- **Approval:** post new candidates to the user in chat without blocking the current work, and log them as `proposed`. Update `last_scanned` in `docs/skill-candidates.md` after each scout run. Create a skill **only** after the user approves it; record rejections with the reason so they aren't proposed again.
+- **Creation:** follow the `create-skill` skill. Skills are `.md` files, so they ship as chores.
 
 ## Documentation
 - `./docs/workflow.md`: workflows (such as the git branch workflow above) with an explanation of the problem each one solves and why it is used.
 - `./docs/coding-style.md`: the project's coding style and how to structure code.
 - `./docs/agents.md`: the project's helper agents, what each does and how to add one.
+- `./docs/skills.md`: the project's skills, skills vs agents, and how repeated tasks become skills. Candidates are logged in `./docs/skill-candidates.md`.

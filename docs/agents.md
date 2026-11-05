@@ -19,6 +19,7 @@ The results are risk indicators to review, not a verdict: whether a gap is unfai
 | `dataset-profiler` | Loads one CSV with `load_csv()` and reports size, encoding, delimiter, columns and loader warnings. | When a new dataset is added to `data/` and you want a first look. | No (read-only). |
 | `dependency-checker` | Compares third-party imports in `src/`, `tests/` and `notebooks/` with `requirement.txt`. | Before a PR that adds imports, or when an install fails. | No (reports and suggests lines). |
 | `qa-auditor` | Quality assurance: data integrity, pipeline integrity (raw data untouched, no silent row loss), code and test gaps, algorithmic behavior (planted defects, invariance, determinism) and bias testing (representation, data quality and cleaning impact by group, outcome gaps, proxies). | Automatically before every feature PR (see `docs/workflow.md`, section 4), when a new dataset is analyzed, or when asked for a QA or bias review. | No (reports; the main session fixes). |
+| `skill-scout` | Mines past session transcripts and `git log` for repeated multi-step tasks, and proposes them as skill candidates with evidence and pitfalls. | After each merged PR, or when asked to "find repeated tasks" (see `docs/skills.md`). | No (reports; the user approves which candidates become skills). |
 | `docs-sync-checker` | Checks that `CLAUDE.md`, `README.md` and `docs/` still match the code: paths, function names, commands and project status. | After a feature lands, or before a PR that changes structure. | No (reports drift). |
 
 ## How to use them

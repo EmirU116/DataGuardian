@@ -7,7 +7,7 @@ This file covers how work moves through the project. Each section says what the 
 **What:**
 1. Update `main`: `git checkout main && git pull`.
 2. Create a branch for the work: `git checkout -b <type>/<short-name>`.
-   - The type is `feature/` for new functionality, `chore/` for setup and tooling, `docs/` for documentation, or `fix/` for bug fixes.
+   - The type is `feature/` for new functionality or `fix/` for bug fixes. A `chore/` branch is only needed when a chore can't be pushed straight to `main` (section 9).
    - Examples: `feature/quality-checks`, `chore/project-setup`.
 3. Commit on that branch. Run the tests before every commit (`.venv/bin/pytest`).
 4. Push and open a PR into `main`, `dev` or `testing`. When Claude finishes a feature, it does this itself once the tests pass (see section 4).
@@ -20,7 +20,7 @@ This file covers how work moves through the project. Each section says what the 
 - Each feature is reviewed as a whole through its PR.
 - An unfinished experiment can be thrown away by deleting its branch.
 
-**Exception:** small changes, such as editing `.md` files, may be committed directly to `main` (see `CLAUDE.md`).
+**Exception:** chores (only `.md` files, `.gitignore`, `requirement.txt` or `pyproject.toml`) are committed and pushed straight to `main` without a branch or PR. See section 9.
 
 ## 2. Plan before code
 
@@ -88,3 +88,62 @@ python3 -m venv .venv
 **Why we use it:**
 - A per-project `.venv/` keeps dependencies isolated.
 - `requirement.txt` pins the version ranges.
+
+## 7. Continuous integration (CI)
+
+**What:** `.github/workflows/tests.yml` runs the tests on GitHub:
+- on every PR into `main`, `dev` or `testing`;
+- on every push to `main`;
+- by hand from the repository's **Actions** tab.
+
+It sets up Python 3.14, creates `.venv`, installs `requirement.txt` and runs `.venv/bin/pytest -q`: the same commands as `CLAUDE.md`. The result appears on the PR as the `Tests / pytest` check.
+
+Tests must build their own fixtures (pytest's `tmp_path`) and never read files under `data/`, because `data/` isn't in git and doesn't exist in CI.
+
+**Optional, recommended:** make the check required so a PR can't be merged while tests fail. On GitHub: **Settings → Branches → Add branch protection rule** (or **Rulesets**) for `main`, enable "Require status checks to pass", and select `pytest`. Only the repository owner can do this.
+
+**Problem it solves:** tests used to run only on the machine of whoever opened the PR. A missing package in `requirement.txt`, or a test that relied on a local file, passed there and broke for everyone else.
+
+**Why we use it:**
+- Every PR is tested in a clean environment, built only from what is in git.
+- The reviewer sees pass or fail on the PR without running anything.
+- `main` is re-tested after each merge.
+
+Plan and design decisions: `docs/ci-plan.md`.
+
+## 8. Watch and continue after a PR
+
+**What:** after Claude opens a PR, it keeps watching it in the same session:
+1. If the CI check fails, it fixes the problem on the branch and pushes again.
+2. When the user merges the PR, Claude deletes the local branch, updates `main`, runs `skill-scout` to look for repeated tasks worth a skill (see `docs/skills.md`), and starts the next item in the current phase plan's "Suggested branch order". It goes through the full routine of section 4: plan, code, tests, QA and PR.
+3. If the PR is closed without merging, or changes are requested, Claude stops and asks.
+4. When the plan has no next item, Claude stops and reports that the phase is done.
+
+**Problem it solves:** without it, every merge needed a new prompt ("now do the next item") and work stalled until someone remembered.
+
+**Why we use it:**
+- Work keeps moving through the plan.
+- The user still reviews and merges every PR. Merging is the go-ahead for the next item.
+- **Limit:** the watch only runs while the Claude Code session is open. Nothing runs on GitHub on Claude's behalf.
+
+## 9. Chores: straight to `main`
+
+**What:** a change is a chore only if every file it touches is one of:
+- any `.md` file: docs, `CLAUDE.md`, `README.md`, agent and skill definitions;
+- `.gitignore`, `requirement.txt` or `pyproject.toml`.
+
+Chores skip the branch, the plan and the PR:
+1. `git checkout main && git pull --ff-only`, then make the edit.
+2. If `requirement.txt` or `pyproject.toml` changed, install and run the tests first (`.venv/bin/pip install -r requirement.txt`, `.venv/bin/pytest`). If anything fails, it becomes a PR instead.
+3. Commit and `git push origin main`.
+4. Watch the `Tests` run that the push starts on `main` (section 7). If it fails, fix it immediately or revert.
+5. If GitHub rejects the push (for example, branch protection was turned on), use a `chore/<name>` branch and a PR.
+
+Everything else goes through a branch and a PR (sections 1 and 4): code in `src/`, tests, notebooks, CI workflows, and any change that mixes chore files with code.
+
+**Problem it solves:** a PR for every doc tweak meant waiting for a review on changes that can't break anything, and the PR list filled up with noise next to real features.
+
+**Why we use it:**
+- Doc and housekeeping changes land immediately.
+- Reviews are spent on code, where they matter.
+- Config chores that can affect the tests (`requirement.txt`, `pyproject.toml`) are tested locally before the push and by CI right after it. A failure is fixed or reverted straight away.
