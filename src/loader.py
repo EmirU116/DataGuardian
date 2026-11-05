@@ -60,6 +60,9 @@ MAX_BAD_ROW_EXAMPLES = 3
 
 _UTF16_BOMS = (codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE)
 
+# The UTF-8 byte-order mark as it looks when decoded as Latin-1.
+_UTF8_BOM_AS_LATIN1 = codecs.BOM_UTF8.decode("latin-1")
+
 
 class DataLoadError(Exception):
     """Raised when a file cannot be loaded as a CSV dataset."""
@@ -135,6 +138,14 @@ def load_csv(
     )
     df, dropped_blank, kept_blank = _handle_blank_lines(df)
 
+    if df.empty and bad_rows:
+        # Every data row was malformed. The usual causes are a wrong delimiter or
+        # a trailing delimiter at the end of each row ("1,2,").
+        raise DataLoadError(
+            f"All {len(bad_rows)} data row(s) have more fields than the header "
+            f"({len(df.columns)} column(s)), e.g. {bad_rows[0]}. Check the delimiter, "
+            f"or whether every row ends with an extra '{delimiter}': {path}"
+        )
     if df.empty:
         raise DataLoadError(f"File has a header but no data rows: {path}")
 
@@ -226,8 +237,9 @@ def _read_header_text(path: Path, encoding: str) -> tuple[int, str]:
     """Find the header line and return (blank lines before it, text from it on).
 
     The file is decoded chunk by chunk until a non-whitespace character appears,
-    then read on until `SAMPLE_SIZE_BYTES` characters after the header are
-    available (or the file ends). So a file that starts with more than one
+    then read on until the whole header line is in and `SAMPLE_SIZE_BYTES`
+    characters from the start of the header are available (or the file ends).
+    So a file that starts with more than one
     sample's worth of blank lines still loads, and the delimiter is sniffed from
     complete lines starting at the header, not from a header cut off at the end
     of the sample.
@@ -242,6 +254,7 @@ def _read_header_text(path: Path, encoding: str) -> tuple[int, str]:
     decoder = codecs.getincrementaldecoder(encoding)(errors="replace")
     text = ""
     header_offset: int | None = None
+    header_line_complete = False
     leading_blank = 0
     try:
         with path.open("rb") as f:
@@ -252,9 +265,17 @@ def _read_header_text(path: Path, encoding: str) -> tuple[int, str]:
                 # Only the new piece needs checking, which keeps this linear.
                 if header_offset is None and piece.strip():
                     leading_blank, header_offset = _count_leading_blank_lines(text)
+                    header_line_complete = _has_line_break(text, header_offset)
+                elif header_offset is not None and not header_line_complete:
+                    header_line_complete = _has_line_break(piece, 0)
                 if not chunk:
                     break
-                if header_offset is not None and len(text) - header_offset >= SAMPLE_SIZE_BYTES:
+                # Stop once the whole header line is in, plus a sample's worth of
+                # text, so a very wide header is never cut off mid-way.
+                if (
+                    header_line_complete
+                    and len(text) - header_offset >= SAMPLE_SIZE_BYTES
+                ):
                     break
     except OSError as exc:
         raise DataLoadError(f"Could not read file {path}: {exc}") from exc
@@ -262,6 +283,11 @@ def _read_header_text(path: Path, encoding: str) -> tuple[int, str]:
     if header_offset is None:
         raise DataLoadError(f"File contains only whitespace: {path}")
     return leading_blank, text[header_offset:]
+
+
+def _has_line_break(text: str, start: int) -> bool:
+    """Return True if `text` contains a line break at or after `start`."""
+    return "\n" in text[start:] or "\r" in text[start:]
 
 
 # One line and its terminator. pandas' python engine ends a line at "\r\n", a
@@ -278,8 +304,11 @@ def _count_leading_blank_lines(text: str) -> tuple[int, int]:
     """
     count = 0
     offset = 0
-    for match in _LINE_PATTERN.finditer(text):
-        if match.start() != offset or match.group(1).strip():
+    while True:
+        # match() is anchored at `offset`; finditer() would search forward from
+        # every position, which is quadratic on a long line with no line break.
+        match = _LINE_PATTERN.match(text, offset)
+        if match is None or match.group(1).strip():
             break
         count += 1
         offset = match.end()
@@ -409,6 +438,13 @@ def _read_with_fallback(
         encoding = "latin-1"
         df, bad_rows = _read_csv(path, delimiter, encoding, skiprows)
 
+    if encoding == "latin-1" and len(df.columns) and str(df.columns[0]).startswith(
+        _UTF8_BOM_AS_LATIN1
+    ):
+        # A UTF-8 BOM read as Latin-1 turns into "ï»¿" at the start of the first
+        # column name; remove it so the name is what the file says.
+        df = df.rename(columns={df.columns[0]: str(df.columns[0])[len(_UTF8_BOM_AS_LATIN1):]})
+
     if encoding == "latin-1":
         warnings.append(
             "File is not valid UTF-8; it was read as Latin-1. Accented or special "
@@ -455,7 +491,9 @@ def _read_csv(
         engine="python",
     )
     try:
-        names = pd.read_csv(path, nrows=0, **options).columns
+        # index_col=False: with skip_blank_lines=False, a blank line right after
+        # the header otherwise makes pandas fail while guessing an index.
+        names = pd.read_csv(path, nrows=0, index_col=False, **options).columns
         df = pd.read_csv(path, header=None, on_bad_lines=collect_bad_row, **options)
     except UnicodeDecodeError:
         raise  # handled by _read_with_fallback

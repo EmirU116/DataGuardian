@@ -335,11 +335,62 @@ def test_extra_field_in_every_row_is_skipped_not_used_as_index(tmp_path):
     assert list(result.df.index) == [0]
 
 
-def test_all_rows_one_field_longer_than_header_are_reported(tmp_path):
-    with pytest.raises(DataLoadError, match="no data rows"):
-        # Every row is malformed, so nothing valid is left; nothing is silently
-        # shifted into the wrong column.
-        load_csv(write(tmp_path, "a,b\n1,2,3\n\n4,5,6\n"))
+@pytest.mark.parametrize(
+    "content",
+    [
+        "a,b\n1,2,3\n\n4,5,6\n",
+        "a,b\n1,2,\n3,4,\n",  # common export bug: a trailing delimiter on every row
+    ],
+)
+def test_all_rows_malformed_gives_a_clear_error(tmp_path, content):
+    """Nothing valid is left; the error explains why instead of saying "no data"."""
+    with pytest.raises(DataLoadError, match=r"All 2 data row\(s\) have more fields"):
+        load_csv(write(tmp_path, content))
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "a,b\n\n1,2\n",
+        "a,b\r\n\r\n1,2\r\n",
+        "a,b,c\n\n1,2,3\n",
+        "\n\na,b\n\n1,2\n",
+        "id,id,\n\n1,2,3\n",
+    ],
+)
+def test_blank_line_right_after_header(tmp_path, content):
+    result = load_csv(write(tmp_path, content))
+
+    assert len(result.df) == 1
+    assert result.df.iloc[0, 0] == "1"
+
+
+def test_single_column_blank_line_right_after_header_is_a_value(tmp_path):
+    assert load_csv(write(tmp_path, "a\n\n1\n")).df["a"].tolist() == ["", "1"]
+
+
+def test_utf8_bom_with_late_latin1_byte_gives_clean_column_name(tmp_path):
+    """UTF-8 BOM, then an invalid UTF-8 byte after the sample: Latin-1 fallback."""
+    rows = "".join(f"{i},x\n" for i in range(SAMPLE_SIZE_BYTES // 4))
+    raw = b"\xef\xbb\xbfid,name\n" + rows.encode("ascii") + b"9,caf\xe9\n"
+    result = load_csv(write(tmp_path, raw))
+
+    assert result.encoding == "latin-1"
+    assert list(result.df.columns) == ["id", "name"]
+    assert result.df["name"].iloc[-1] == "café"
+
+
+def test_very_wide_header_is_checked_completely(tmp_path):
+    """A header longer than the sample: blank names at the end are still found,
+    and no blank name is invented where the sample would have cut the header."""
+    names = [f"column_{i}" for i in range(SAMPLE_SIZE_BYTES // 8)] + [""]
+    header = ",".join(names)
+    assert len(header) > SAMPLE_SIZE_BYTES
+    result = load_csv(write(tmp_path, header + "\n" + ",".join("1" * len(names)) + "\n"))
+
+    blank_warnings = [w for w in result.warnings if "Blank column name" in w]
+    assert len(blank_warnings) == 1
+    assert f"[{len(names)}]" in blank_warnings[0]
 
 
 def test_single_column_header_with_two_field_rows(tmp_path):
