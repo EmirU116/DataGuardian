@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Tools
+.pytest_cache/
+.ipynb_checkpoints/
+
+# Datasets: keep the folders, not the data (size and licensing).
+# See docs/workflow.md for how to get the sample dataset.
+data/**/*
+!data/**/
+!data/**/.gitkeep
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
