@@ -11,7 +11,9 @@ How it works
    - refuse binary files (NUL bytes in a non-UTF-16 file).
    Then it finds the header line, skipping blank lines before it (even more
    than one sample's worth), and from the text starting at the header:
-   - detects the delimiter (`,` `;` tab `|`) with `csv.Sniffer`;
+   - detects the delimiter (`,` `;` tab `|`) with `csv.Sniffer`, or, when the
+     rows are irregular, by testing each candidate on the header and the first
+     data rows (with a warning that it was guessed);
    - inspects the raw header for duplicate or blank column names.
 3. Reads the whole file with pandas, keeping **every value as raw text**
    (`dtype=str`, `keep_default_na=False`). Nothing is converted to numbers, dates
@@ -48,6 +50,14 @@ import pandas as pd
 
 # How many bytes to read from the start of the file for sniffing.
 SAMPLE_SIZE_BYTES = 64 * 1024
+
+# Upper limit on the text read while looking for the end of the header line.
+# A stray quote in an unquoted name (e.g. `5" screen`) can make a header look
+# unfinished; the limit stops that from pulling the whole file into memory.
+MAX_HEADER_SEARCH_CHARS = 1024 * 1024
+
+# How many data rows the delimiter fallback looks at.
+DELIMITER_CHECK_ROWS = 200
 
 # Delimiters we try to detect. Restricting the set stops Sniffer from picking
 # letters or punctuation that merely happen to appear on every line.
@@ -287,6 +297,11 @@ def _read_header_text(path: Path, encoding: str) -> tuple[int, str]:
                     and len(text) - header_offset >= SAMPLE_SIZE_BYTES
                 ):
                     break
+                if (
+                    header_offset is not None
+                    and len(text) - header_offset >= MAX_HEADER_SEARCH_CHARS
+                ):
+                    break  # header looks endless (stray quote?): stop searching
     except OSError as exc:
         raise DataLoadError(f"Could not read file {path}: {exc}") from exc
 
@@ -407,10 +422,17 @@ def _detect_delimiter(text_sample: str) -> tuple[str, str | None]:
 
     `csv.Sniffer` is tried first. It fails when lines don't all have the same
     number of fields (a short row, an extra field, a blank line), and on
-    single-column files. Then the header record decides: the candidate that
-    splits it into the most fields wins, and a warning says the delimiter was
-    guessed. If no candidate splits the header, the file has one column and the
-    comma is used, with no warning.
+    single-column files. Then each candidate is tested on the header record and
+    the first data rows (`_score_delimiter`):
+
+    - a candidate counts only if it splits the header into several fields *and*
+      splits most data rows too, so a single-column file whose header happens to
+      contain ``;`` (``price;eur``) stays one column;
+    - among those, the one whose rows most often have the header's field count
+      wins (ties: more header fields, then the order of `CANDIDATE_DELIMITERS`).
+
+    If no candidate qualifies, the file has one column and the comma is used,
+    with no warning. Otherwise the guess comes with a warning.
 
     Returns:
         The delimiter, and a warning message if it was guessed (else None).
@@ -426,24 +448,65 @@ def _detect_delimiter(text_sample: str) -> tuple[str, str | None]:
     except csv.Error:
         pass
 
-    best, best_count = ",", 1
-    for candidate in CANDIDATE_DELIMITERS:
-        try:
-            # csv.reader reads one full record, so quoted delimiters and quoted
-            # line breaks in the header are handled.
-            fields = next(csv.reader(io.StringIO(text_sample, newline=""), delimiter=candidate))
-        except (StopIteration, csv.Error):
+    best: tuple[float, int, int] | None = None  # (match share, header fields, -order)
+    best_delimiter = ","
+    for order, candidate in enumerate(CANDIDATE_DELIMITERS):
+        score = _score_delimiter(text_sample, candidate)
+        if score is None:
             continue
-        if len(fields) > best_count:
-            best, best_count = candidate, len(fields)
+        key = (score[0], score[1], -order)
+        if best is None or key > best:
+            best, best_delimiter = key, candidate
 
-    if best_count == 1:
+    if best is None:
         return ",", None  # one column: there is no delimiter to find
-    return best, (
+    return best_delimiter, (
         f"Could not detect the delimiter from the data (rows have different numbers "
-        f"of fields); guessed {best!r} because it splits the header into "
-        f"{best_count} columns."
+        f"of fields); guessed {best_delimiter!r}: it splits the header into "
+        f"{best[1]} columns and {best[0]:.0%} of the first data rows match."
     )
+
+
+def _score_delimiter(text_sample: str, delimiter: str) -> tuple[float, int] | None:
+    """Score `delimiter` as the field separator of `text_sample`.
+
+    Parses the header record and up to `DELIMITER_CHECK_ROWS` data records with
+    `csv.reader` (so quoted delimiters and quoted line breaks are handled). Blank
+    records are ignored, and the last record is dropped because the sample may
+    cut it off.
+
+    Returns:
+        None if the delimiter doesn't split the header, or doesn't split at least
+        half of the data rows. Otherwise (share of data rows whose field count
+        equals the header's, number of header fields). With no data rows at all,
+        the header alone decides.
+    """
+    reader = csv.reader(io.StringIO(text_sample, newline=""), delimiter=delimiter)
+    records: list[list[str]] = []
+    try:
+        for record in reader:
+            records.append(record)
+            if len(records) > DELIMITER_CHECK_ROWS + 1:
+                break
+    except csv.Error:
+        if not records:
+            return None  # this delimiter can't even parse the header
+
+    if not records or len(records[0]) < 2:
+        return None
+    header_fields = len(records[0])
+    rows = records[1:]
+    if len(rows) > 1:
+        rows = rows[:-1]  # possibly cut off by the end of the sample
+    rows = [r for r in rows if r and not (len(r) == 1 and not r[0].strip())]
+    if not rows:
+        return 1.0, header_fields
+
+    split = sum(1 for r in rows if len(r) > 1)
+    if split * 2 < len(rows):
+        return None  # the data rows mostly aren't split: not this delimiter
+    matching = sum(1 for r in rows if len(r) == header_fields)
+    return matching / len(rows), header_fields
 
 
 def _check_header(text_sample: str, delimiter: str) -> list[str]:

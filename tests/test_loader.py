@@ -465,6 +465,23 @@ def test_single_column_file_gets_no_delimiter_warning(tmp_path):
     assert not any("guessed" in w for w in result.warnings)
 
 
+@pytest.mark.parametrize("header", ["price;eur", "a|b", "size (cm);weight"])
+def test_single_column_header_with_delimiter_character_stays_one_column(tmp_path, header):
+    """The header alone must not decide: the data rows aren't split."""
+    result = load_csv(write(tmp_path, f"{header}\n1\n2\n\n3\n"))
+
+    assert list(result.df.columns) == [header]
+    assert result.df[header].tolist() == ["1", "2", "", "3"]  # blank kept as a value
+    assert not any("guessed" in w for w in result.warnings)
+
+
+def test_comma_file_with_semicolons_in_header_names_stays_comma(tmp_path):
+    result = load_csv(write(tmp_path, "a;b;c,d\n1,2\n3\n4,5\n6,7,8\n"))
+
+    assert result.delimiter == ","
+    assert list(result.df.columns) == ["a;b;c", "d"]
+
+
 # --- Very long headers ---------------------------------------------------------
 
 
@@ -490,6 +507,19 @@ def test_long_header_without_line_break_is_fast(tmp_path):
     assert time.perf_counter() - start < 10
 
 
+def test_stray_quote_in_header_does_not_read_whole_file(tmp_path):
+    """A `"` inside an unquoted name looks like an open quote; the header search
+    is capped instead of reading the whole file."""
+    from src.loader import MAX_HEADER_SEARCH_CHARS, _read_header_text
+
+    rows = "".join(f"{i},x,y\n" for i in range(200_000))  # about 2.6 MB
+    path = write(tmp_path, 'size_in",c,d\n' + rows)
+    _, header_text = _read_header_text(path, "utf-8-sig")
+
+    assert len(header_text) <= MAX_HEADER_SEARCH_CHARS + SAMPLE_SIZE_BYTES
+    assert load_csv(path).delimiter == ","
+
+
 # --- More encoding edge cases ---------------------------------------------------
 
 
@@ -501,6 +531,16 @@ def test_bom_then_blank_lines_then_latin1_byte(tmp_path):
     assert list(result.df.columns) == ["name", "city"]
     assert result.df["city"].tolist() == ["é"]
     assert result.blank_lines == 2
+
+
+def test_bom_far_before_header_then_latin1_byte(tmp_path):
+    """The BOM is stripped even when the header is more than one chunk away."""
+    raw = b"\xef\xbb\xbf" + b"\n" * (SAMPLE_SIZE_BYTES + 100) + b"name,city\nz,\xe9\n"
+    result = load_csv(write(tmp_path, raw))
+
+    assert list(result.df.columns) == ["name", "city"]
+    assert result.df["city"].tolist() == ["é"]
+    assert result.blank_lines == SAMPLE_SIZE_BYTES + 100
 
 
 def test_truncated_utf16_file_is_rejected(tmp_path):
