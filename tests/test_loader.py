@@ -237,6 +237,118 @@ def test_only_blank_lines_after_header_means_no_data(tmp_path):
         load_csv(write(tmp_path, "a,b\n\n\n"))
 
 
+@pytest.mark.parametrize(
+    "content",
+    [
+        "\r\ra,b\r1,2\r3,4\r",  # old Mac line endings (lone CR)
+        "\r\r\na,b\n1,2\n3,4\n",  # mixed: CR, then CRLF
+        "\n \ra,b\n1,2\n3,4\n",  # whitespace-only line ended by a lone CR
+    ],
+)
+def test_leading_blank_lines_with_any_line_ending(tmp_path, content):
+    result = load_csv(write(tmp_path, content))
+
+    assert list(result.df.columns) == ["a", "b"]
+    assert result.df["a"].tolist() == ["1", "3"]
+    assert result.blank_lines == 2
+
+
+def test_header_beyond_first_sample_is_found(tmp_path):
+    """More than a whole sample of blank lines before the header still loads."""
+    content = "\n" * (SAMPLE_SIZE_BYTES + 10) + "a;b\n1;2\n"
+    result = load_csv(write(tmp_path, content))
+
+    assert result.delimiter == ";"
+    assert result.df.values.tolist() == [["1", "2"]]
+    assert result.blank_lines == SAMPLE_SIZE_BYTES + 10
+
+
+@pytest.mark.parametrize("blank_count", [SAMPLE_SIZE_BYTES - 3, SAMPLE_SIZE_BYTES - 1])
+def test_header_cut_by_sample_boundary_still_sniffs_delimiter(tmp_path, blank_count):
+    content = "\n" * blank_count + "name;age;city\nAl;30;X\nBo;40;Y\n"
+    result = load_csv(write(tmp_path, content))
+
+    assert result.delimiter == ";"
+    assert list(result.df.columns) == ["name", "age", "city"]
+
+
+@pytest.mark.parametrize(
+    ("content", "encoding"),
+    [
+        ("﻿\n\na,b\n1,2\n\n3,4\n", "utf-8"),  # UTF-8 BOM, then blank lines
+        ("\n\na,b\n1,2\n\n3,4\n", "utf-16-le-bom"),
+        ("\n\na,b\n1,2\n\n3,4\n", "utf-16-be-bom"),
+        ("\n\na,b\ncafé,2\n\nnaïve,4\n", "latin-1"),
+    ],
+)
+def test_blank_lines_with_other_encodings(tmp_path, content, encoding):
+    if encoding == "utf-16-le-bom":
+        raw = b"\xff\xfe" + content.encode("utf-16-le")
+    elif encoding == "utf-16-be-bom":
+        raw = b"\xfe\xff" + content.encode("utf-16-be")
+    else:
+        raw = content.encode(encoding)
+    result = load_csv(write(tmp_path, raw))
+
+    assert list(result.df.columns) == ["a", "b"]
+    assert len(result.df) == 2
+    assert result.blank_lines == 3
+
+
+@pytest.mark.parametrize("delimiter", [";", "\t", "|"])
+def test_blank_lines_with_other_delimiters(tmp_path, delimiter):
+    d = delimiter
+    result = load_csv(write(tmp_path, f"\na{d}b{d}c\n1{d}2{d}3\n\n4{d}5{d}6\n"))
+
+    assert result.delimiter == delimiter
+    assert result.df["c"].tolist() == ["3", "6"]
+    assert result.blank_lines == 2
+
+
+@pytest.mark.parametrize(
+    ("content", "leading_blank", "data_lines"),
+    [
+        ("a,b\n1,2\n\n3,4,5\n6,7\n\n8,9,10\n", 0, 6),
+        ("\n\na,b\r\n1,2\r\n\r\n   \r\n3\r\n", 2, 4),
+        ("name\nAl\n\nBo\n,x\n\n\n", 0, 6),
+        ("a,b,c\n1,2,3\n4\n\n5,6,7,8\n,,\n", 0, 5),
+    ],
+)
+def test_every_line_is_accounted_for(tmp_path, content, leading_blank, data_lines):
+    """Data lines after the header = rows loaded + skipped rows + dropped blank lines."""
+    result = load_csv(write(tmp_path, content))
+
+    after_header = result.blank_lines - leading_blank
+    assert len(result.df) + result.skipped_rows + after_header == data_lines
+
+
+# --- Extra fields in every row (implicit index) ---------------------------------
+# When data rows have one field more than the header, pandas would normally use
+# the first field as the row index, silently losing that column of data.
+
+
+def test_extra_field_in_every_row_is_skipped_not_used_as_index(tmp_path):
+    result = load_csv(write(tmp_path, "a,b\n1,2\n3,4,5\n6,7,8\n"))
+
+    assert result.df.values.tolist() == [["1", "2"]]
+    assert result.skipped_rows == 2
+    assert list(result.df.index) == [0]
+
+
+def test_all_rows_one_field_longer_than_header_are_reported(tmp_path):
+    with pytest.raises(DataLoadError, match="no data rows"):
+        # Every row is malformed, so nothing valid is left; nothing is silently
+        # shifted into the wrong column.
+        load_csv(write(tmp_path, "a,b\n1,2,3\n\n4,5,6\n"))
+
+
+def test_single_column_header_with_two_field_rows(tmp_path):
+    result = load_csv(write(tmp_path, "id\n1\n2,y\n3\n"))
+
+    assert result.df["id"].tolist() == ["1", "3"]
+    assert result.skipped_rows == 1
+
+
 def test_no_warning_for_file_without_blank_lines(tmp_path):
     result = load_csv(write(tmp_path, "a,b\n1,2\n"))
 

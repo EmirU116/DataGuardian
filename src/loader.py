@@ -8,9 +8,11 @@ How it works
    not empty.
 2. Reads a sample from the start of the file to:
    - detect the encoding (UTF-16 by its BOM, else UTF-8, else Latin-1);
-   - refuse binary files (NUL bytes in a non-UTF-16 file);
-   - detect the delimiter (`,` `;` tab `|`) with `csv.Sniffer`;
-   - inspect the raw header for duplicate or blank column names.
+   - refuse binary files (NUL bytes in a non-UTF-16 file).
+   Then it finds the header line, skipping blank lines before it (even more
+   than one sample's worth), and from the text starting at the header:
+   - detects the delimiter (`,` `;` tab `|`) with `csv.Sniffer`;
+   - inspects the raw header for duplicate or blank column names.
 3. Reads the whole file with pandas, keeping **every value as raw text**
    (`dtype=str`, `keep_default_na=False`). Nothing is converted to numbers, dates
    or NaN, so the checks can see exactly what is in the file: `"NA"`, `""`, `" 12 "`
@@ -37,6 +39,7 @@ from __future__ import annotations
 
 import codecs
 import csv
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -119,14 +122,10 @@ def load_csv(
 
     sample = _read_sample(path)
     encoding = _detect_encoding(sample)
-    text_sample = _decode_sample(sample, encoding)
-
-    if not text_sample.strip():
-        raise DataLoadError(f"File contains only whitespace: {path}")
 
     # Blank lines before the header would otherwise be read as the header itself.
-    leading_blank = _count_leading_blank_lines(text_sample)
-    header_text = text_sample.split("\n", leading_blank)[-1] if leading_blank else text_sample
+    # header_text starts at the header, even if it lies beyond the first sample.
+    leading_blank, header_text = _read_header_text(path, encoding)
 
     delimiter = _detect_delimiter(header_text)
     warnings.extend(_check_header(header_text, delimiter))
@@ -223,23 +222,68 @@ def _detect_encoding(sample: bytes) -> str:
         return "latin-1"
 
 
-def _decode_sample(sample: bytes, encoding: str) -> str:
-    """Decode the byte sample, ignoring a character cut off at the end."""
-    return codecs.getincrementaldecoder(encoding)().decode(sample, final=False)
+def _read_header_text(path: Path, encoding: str) -> tuple[int, str]:
+    """Find the header line and return (blank lines before it, text from it on).
+
+    The file is decoded chunk by chunk until a non-whitespace character appears,
+    then read on until `SAMPLE_SIZE_BYTES` characters after the header are
+    available (or the file ends). So a file that starts with more than one
+    sample's worth of blank lines still loads, and the delimiter is sniffed from
+    complete lines starting at the header, not from a header cut off at the end
+    of the sample.
+
+    Decoding uses ``errors="replace"``: this text is only used to sniff the
+    delimiter and inspect the header. The full read in `_read_with_fallback`
+    decides the real encoding.
+
+    Raises:
+        DataLoadError: The file contains only whitespace, or cannot be read.
+    """
+    decoder = codecs.getincrementaldecoder(encoding)(errors="replace")
+    text = ""
+    header_offset: int | None = None
+    leading_blank = 0
+    try:
+        with path.open("rb") as f:
+            while True:
+                chunk = f.read(SAMPLE_SIZE_BYTES)
+                piece = decoder.decode(chunk, final=not chunk)
+                text += piece
+                # Only the new piece needs checking, which keeps this linear.
+                if header_offset is None and piece.strip():
+                    leading_blank, header_offset = _count_leading_blank_lines(text)
+                if not chunk:
+                    break
+                if header_offset is not None and len(text) - header_offset >= SAMPLE_SIZE_BYTES:
+                    break
+    except OSError as exc:
+        raise DataLoadError(f"Could not read file {path}: {exc}") from exc
+
+    if header_offset is None:
+        raise DataLoadError(f"File contains only whitespace: {path}")
+    return leading_blank, text[header_offset:]
 
 
-def _count_leading_blank_lines(text_sample: str) -> int:
-    """Count the empty or whitespace-only lines before the first non-blank line.
+# One line and its terminator. pandas' python engine ends a line at "\r\n", a
+# lone "\r" or "\n", so the blank-line count must use the same rule to agree
+# with `skiprows`.
+_LINE_PATTERN = re.compile(r"([^\r\n]*)(\r\n|\r|\n)")
 
-    Lines are split on ``"\\n"`` only, matching how pandas counts lines for
-    ``skiprows``; ``.strip()`` also removes the ``"\\r"`` of Windows line endings.
+
+def _count_leading_blank_lines(text: str) -> tuple[int, int]:
+    """Count empty or whitespace-only lines at the start of `text`.
+
+    Returns the number of such lines and the character offset where the first
+    non-blank line starts.
     """
     count = 0
-    for line in text_sample.split("\n"):
-        if line.strip():
+    offset = 0
+    for match in _LINE_PATTERN.finditer(text):
+        if match.start() != offset or match.group(1).strip():
             break
         count += 1
-    return count
+        offset = match.end()
+    return count, offset
 
 
 def _handle_blank_lines(df: pd.DataFrame) -> tuple[pd.DataFrame, int, int]:
@@ -255,6 +299,10 @@ def _handle_blank_lines(df: pd.DataFrame) -> tuple[pd.DataFrame, int, int]:
     - One column: blank rows at the end of the file are dropped; blank rows
       between values are kept and filled with ``""``, since the value is empty.
       Whitespace-only values (``"   "``) are real text and are left untouched.
+
+    Known limit: in a multi-column file, a line holding only a quoted empty or
+    whitespace value (``""`` or ``"  "``) parses exactly like a whitespace-only
+    line, so it is dropped and counted as a blank line too.
 
     Returns:
         The cleaned DataFrame (with a fresh index), the number of dropped blank
@@ -379,6 +427,17 @@ def _read_csv(
     than the C engine but lets us count and report bad rows. Blank lines are
     kept (``skip_blank_lines=False``) so `_handle_blank_lines` can count them
     instead of pandas dropping them silently.
+
+    The file is read in two passes:
+
+    1. The header only (``nrows=0``), to get the column names exactly as pandas
+       names them (blank names become ``"Unnamed: N"``, duplicates get ``".1"``).
+    2. Every line *without* a header row (``header=None``), header line included.
+       The header line is then the first row, so it sets the number of columns
+       and every longer row goes to `on_bad_lines`. With a normal header read,
+       pandas would silently turn the first field into the row index when the
+       data rows are one field longer than the header, and that data would be
+       lost.
     """
     bad_rows: list[list[str]] = []
 
@@ -386,18 +445,18 @@ def _read_csv(
         bad_rows.append(fields)
         return None  # returning None tells pandas to skip the row
 
+    options = dict(
+        sep=delimiter,
+        encoding=encoding,
+        dtype=str,
+        keep_default_na=False,  # keep "NA", "null", "" as written
+        skip_blank_lines=False,  # blank lines are counted, not silently dropped
+        skiprows=skiprows,  # blank lines before the header
+        engine="python",
+    )
     try:
-        df = pd.read_csv(
-            path,
-            sep=delimiter,
-            encoding=encoding,
-            dtype=str,
-            keep_default_na=False,  # keep "NA", "null", "" as written
-            skip_blank_lines=False,  # blank lines are counted, not silently dropped
-            skiprows=skiprows,  # blank lines before the header
-            engine="python",
-            on_bad_lines=collect_bad_row,
-        )
+        names = pd.read_csv(path, nrows=0, **options).columns
+        df = pd.read_csv(path, header=None, on_bad_lines=collect_bad_row, **options)
     except UnicodeDecodeError:
         raise  # handled by _read_with_fallback
     except pd.errors.EmptyDataError as exc:
@@ -407,4 +466,13 @@ def _read_csv(
     except OSError as exc:
         raise DataLoadError(f"Could not read file {path}: {exc}") from exc
 
+    if df.shape[1] != len(names):
+        # Both passes parse the same header line, so this should not happen.
+        raise DataLoadError(
+            f"Could not parse the header of {path}: found {len(names)} column "
+            f"name(s) but {df.shape[1]} field(s) in the header line."
+        )
+    # Drop the header line (row 0) and use the names from the first pass.
+    df = df.iloc[1:].reset_index(drop=True)
+    df.columns = names
     return df, bad_rows
