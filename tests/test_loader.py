@@ -482,6 +482,45 @@ def test_comma_file_with_semicolons_in_header_names_stays_comma(tmp_path):
     assert list(result.df.columns) == ["a;b;c", "d"]
 
 
+@pytest.mark.parametrize(
+    "content",
+    [
+        "a;b;c\n1;2;3\n4\n5\n6;7;8\n9\n10\n",  # most rows short, 1 in 3 complete
+        "".join(["id;name;email\n"] + [f"{i};x;y\n" if i % 3 == 0 else f"{i}\n" for i in range(300)]),
+    ],
+)
+def test_semicolon_file_with_many_short_rows_is_still_found(tmp_path, content):
+    result = load_csv(write(tmp_path, content))
+
+    assert result.delimiter == ";"
+    assert len(result.df.columns) == 3
+
+
+def test_header_with_delimiter_but_unsplit_rows_warns(tmp_path):
+    """Read as one column, but say so: the file might really have columns."""
+    result = load_csv(write(tmp_path, "a;b;c\n1\n2\n"))
+
+    assert list(result.df.columns) == ["a;b;c"]
+    assert any("read as a single column" in w for w in result.warnings)
+
+
+@pytest.mark.parametrize(
+    ("content", "delimiter", "columns"),
+    [
+        ("price;eur\n1\n", ",", ["price;eur"]),  # one data row, one column
+        ("a|b\nx\n", ",", ["a|b"]),
+        ("x;y|z|w\n1|2|3\n", "|", ["x;y", "z", "w"]),  # one data row, real columns
+        ('"price;eur"\n1\n2\n\n3\n', ",", ["price;eur"]),  # quoted single name
+    ],
+)
+def test_delimiter_with_one_data_row(tmp_path, content, delimiter, columns):
+    """The whole file fits in the sample, so the data row counts too."""
+    result = load_csv(write(tmp_path, content))
+
+    assert result.delimiter == delimiter
+    assert list(result.df.columns) == columns
+
+
 # --- Very long headers ---------------------------------------------------------
 
 
@@ -514,10 +553,49 @@ def test_stray_quote_in_header_does_not_read_whole_file(tmp_path):
 
     rows = "".join(f"{i},x,y\n" for i in range(200_000))  # about 2.6 MB
     path = write(tmp_path, 'size_in",c,d\n' + rows)
-    _, header_text = _read_header_text(path, "utf-8-sig")
+    _, header_text, _ = _read_header_text(path, "utf-8-sig")
 
     assert len(header_text) <= MAX_HEADER_SEARCH_CHARS + SAMPLE_SIZE_BYTES
     assert load_csv(path).delimiter == ","
+
+
+def test_unquoted_header_longer_than_search_cap_is_still_checked(tmp_path, monkeypatch):
+    """The cap only applies inside quotes; a plain wide header is read in full."""
+    import src.loader as loader
+
+    monkeypatch.setattr(loader, "MAX_HEADER_SEARCH_CHARS", 1000)
+    names = [f"col{i:05d}" for i in range(1000)] + ["col00005", ""]
+    content = ",".join(names) + "\n" + ",".join("1" * len(names)) + "\n"
+    result = load_csv(write(tmp_path, content))
+
+    assert any("Duplicate column name" in w and "col00005" in w for w in result.warnings)
+    assert any("Blank column name" in w for w in result.warnings)
+
+
+# --- Broken quoting ---------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        'c0,c1\n1,2\n3,4\n"a"b,c\n',  # last line: pandas stopped without a trace
+        'c0,c1\n1,2\n3,4\n"open\n',  # an unclosed quote at the end of the file
+    ],
+)
+def test_broken_quoting_on_last_line_is_counted(tmp_path, content):
+    result = load_csv(write(tmp_path, content))
+
+    assert result.df["c0"].tolist() == ["1", "3"]
+    assert result.skipped_rows == 1
+    assert any("broken quoting" in w and "line 4" in w for w in result.warnings)
+
+
+def test_valid_quotes_are_not_reported_as_broken(tmp_path):
+    result = load_csv(write(tmp_path, 'c0,c1\n1,a"b\n2,"x\n\ny"\n3,"say ""hi"""\n'))
+
+    assert len(result.df) == 3
+    assert result.skipped_rows == 0
+    assert result.warnings == []
 
 
 # --- More encoding edge cases ---------------------------------------------------

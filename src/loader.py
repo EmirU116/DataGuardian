@@ -19,8 +19,8 @@ How it works
    (`dtype=str`, `keep_default_na=False`). Nothing is converted to numbers, dates
    or NaN, so the checks can see exactly what is in the file: `"NA"`, `""`, `" 12 "`
    and `"abc"` all survive as written.
-4. Counts malformed rows (more fields than the header) and skips them instead of
-   crashing. Rows with *fewer* fields are kept; their missing fields become NaN,
+4. Counts malformed rows (more fields than the header, or broken quoting that
+   pandas can't read) and skips them instead of crashing. Rows with *fewer* fields are kept; their missing fields become NaN,
    which the missing-values check reports.
 5. Handles blank lines explicitly instead of letting pandas drop them silently:
    - blank lines before the header are skipped;
@@ -89,7 +89,8 @@ class LoadResult:
         encoding: Encoding used to decode the file (e.g. ``"utf-8"``, ``"latin-1"``).
         delimiter: Field separator that was detected.
         file_size_bytes: Size of the file on disk.
-        skipped_rows: Number of malformed rows (too many fields) that were skipped.
+        skipped_rows: Number of malformed rows that were skipped: rows with more
+            fields than the header, and rows with broken quoting.
         blank_lines: Number of blank lines that were not loaded as rows (before the
             header, between records of a multi-column file, or at the end of a
             single-column file). Blank lines kept as empty values are not counted.
@@ -140,9 +141,9 @@ def load_csv(
 
     # Blank lines before the header would otherwise be read as the header itself.
     # header_text starts at the header, even if it lies beyond the first sample.
-    leading_blank, header_text = _read_header_text(path, encoding)
+    leading_blank, header_text, whole_file = _read_header_text(path, encoding)
 
-    delimiter, delimiter_warning = _detect_delimiter(header_text)
+    delimiter, delimiter_warning = _detect_delimiter(header_text, complete=whole_file)
     if delimiter_warning:
         warnings.append(delimiter_warning)
     warnings.extend(_check_header(header_text, delimiter))
@@ -150,15 +151,25 @@ def load_csv(
     df, bad_rows, encoding = _read_with_fallback(
         path, delimiter, encoding, warnings, skiprows=leading_blank
     )
+    # pandas silently stops at, or skips, a record with broken quoting ('"a"b,c').
+    # Count the records independently so no row disappears without a trace.
+    unread, unread_detail = _count_unread_rows(
+        path, delimiter, encoding, skiprows=leading_blank, rows_read=len(df) + len(bad_rows)
+    )
     df, dropped_blank, kept_blank = _handle_blank_lines(df)
 
-    if df.empty and bad_rows:
+    if df.empty and bad_rows and not unread:
         # Every data row was malformed. The usual causes are a wrong delimiter or
         # a trailing delimiter at the end of each row ("1,2,").
         raise DataLoadError(
             f"All {len(bad_rows)} data row(s) have more fields than the header "
             f"({len(df.columns)} column(s)), e.g. {bad_rows[0]}. Check the delimiter, "
             f"or whether every row ends with an extra '{delimiter}': {path}"
+        )
+    if df.empty and unread:
+        raise DataLoadError(
+            f"No data row could be read: {unread} row(s) have broken quoting "
+            f"({unread_detail}): {path}"
         )
     if df.empty:
         raise DataLoadError(f"File has a header but no data rows: {path}")
@@ -184,6 +195,11 @@ def load_csv(
             f"Skipped {len(bad_rows)} malformed row(s) with more fields than the "
             f"header. Examples: {examples}"
         )
+    if unread:
+        warnings.append(
+            f"Skipped {unread} row(s) with broken quoting that could not be read "
+            f"({unread_detail}). Check the quotes on that line."
+        )
 
     return LoadResult(
         df=df,
@@ -191,7 +207,7 @@ def load_csv(
         encoding=encoding,
         delimiter=delimiter,
         file_size_bytes=file_size,
-        skipped_rows=len(bad_rows),
+        skipped_rows=len(bad_rows) + unread,
         blank_lines=leading_blank + dropped_blank,
         warnings=warnings,
     )
@@ -247,8 +263,9 @@ def _detect_encoding(sample: bytes) -> str:
         return "latin-1"
 
 
-def _read_header_text(path: Path, encoding: str) -> tuple[int, str]:
-    """Find the header line and return (blank lines before it, text from it on).
+def _read_header_text(path: Path, encoding: str) -> tuple[int, str, bool]:
+    """Find the header line and return (blank lines before it, text from it on,
+    whether that text runs to the end of the file).
 
     The file is decoded chunk by chunk until a non-whitespace character appears,
     then read on until the whole header line is in and `SAMPLE_SIZE_BYTES`
@@ -257,6 +274,11 @@ def _read_header_text(path: Path, encoding: str) -> tuple[int, str]:
     sample's worth of blank lines still loads, and the delimiter is sniffed from
     complete lines starting at the header, not from a header cut off at the end
     of the sample.
+
+    One limit: if the header still looks like it is inside a quoted name after
+    `MAX_HEADER_SEARCH_CHARS` characters (usually a stray quote in an unquoted
+    name, like ``5" screen``), the search stops there instead of reading the
+    whole file. An unquoted header is always read to its end, however wide.
 
     Decoding uses ``errors="replace"``: this text is only used to sniff the
     delimiter and inspect the header. The full read in `_read_with_fallback`
@@ -271,6 +293,7 @@ def _read_header_text(path: Path, encoding: str) -> tuple[int, str]:
     header_line_complete = False
     in_quotes = False  # inside a quoted header field at the end of the text so far
     leading_blank = 0
+    whole_file = False
     try:
         with path.open("rb") as f:
             while True:
@@ -289,6 +312,7 @@ def _read_header_text(path: Path, encoding: str) -> tuple[int, str]:
                 elif header_offset is not None and not header_line_complete:
                     header_line_complete, in_quotes = _scan_header_end(piece, 0, in_quotes)
                 if not chunk:
+                    whole_file = True
                     break
                 # Stop once the whole header line is in, plus a sample's worth of
                 # text, so a very wide header is never cut off mid-way.
@@ -298,16 +322,17 @@ def _read_header_text(path: Path, encoding: str) -> tuple[int, str]:
                 ):
                     break
                 if (
-                    header_offset is not None
+                    in_quotes
+                    and header_offset is not None
                     and len(text) - header_offset >= MAX_HEADER_SEARCH_CHARS
                 ):
-                    break  # header looks endless (stray quote?): stop searching
+                    break  # an "open quote" this long is a stray quote: stop searching
     except OSError as exc:
         raise DataLoadError(f"Could not read file {path}: {exc}") from exc
 
     if header_offset is None:
         raise DataLoadError(f"File contains only whitespace: {path}")
-    return leading_blank, text[header_offset:]
+    return leading_blank, text[header_offset:], whole_file
 
 
 # A double quote, or a line break: what decides where a CSV record ends.
@@ -417,7 +442,7 @@ def _handle_blank_lines(df: pd.DataFrame) -> tuple[pd.DataFrame, int, int]:
     return df, dropped, 0
 
 
-def _detect_delimiter(text_sample: str) -> tuple[str, str | None]:
+def _detect_delimiter(text_sample: str, *, complete: bool = False) -> tuple[str, str | None]:
     """Detect the field separator.
 
     `csv.Sniffer` is tried first. It fails when lines don't all have the same
@@ -426,13 +451,23 @@ def _detect_delimiter(text_sample: str) -> tuple[str, str | None]:
     the first data rows (`_score_delimiter`):
 
     - a candidate counts only if it splits the header into several fields *and*
-      splits most data rows too, so a single-column file whose header happens to
-      contain ``;`` (``price;eur``) stays one column;
+      the data agrees: it splits at least half of the data rows, or at least a
+      fifth of the rows have exactly the header's field count. So a
+      single-column file whose header happens to contain ``;`` (``price;eur``)
+      stays one column, while a ``;`` file with many short rows is still found;
     - among those, the one whose rows most often have the header's field count
       wins (ties: more header fields, then the order of `CANDIDATE_DELIMITERS`).
 
-    If no candidate qualifies, the file has one column and the comma is used,
-    with no warning. Otherwise the guess comes with a warning.
+    If no candidate qualifies, the file is read as one column with the comma.
+    That comes with a warning when the header contains a candidate character
+    (the file might really have several columns); a guessed delimiter always
+    comes with a warning.
+
+    Args:
+        text_sample: Text starting at the header line.
+        complete: True if `text_sample` runs to the end of the file. Then its
+            last line is complete and is used too; otherwise it may be cut off
+            and is ignored.
 
     Returns:
         The delimiter, and a warning message if it was guessed (else None).
@@ -440,7 +475,7 @@ def _detect_delimiter(text_sample: str) -> tuple[str, str | None]:
     # Only sniff complete lines so a line cut off at the end of the sample does
     # not confuse the field counts.
     lines = text_sample.splitlines()
-    if len(lines) > 1:
+    if len(lines) > 1 and not complete:
         lines = lines[:-1]
     try:
         dialect = csv.Sniffer().sniff("\n".join(lines), delimiters=CANDIDATE_DELIMITERS)
@@ -450,8 +485,11 @@ def _detect_delimiter(text_sample: str) -> tuple[str, str | None]:
 
     best: tuple[float, int, int] | None = None  # (match share, header fields, -order)
     best_delimiter = ","
+    in_header: list[str] = []  # candidates that split the header, accepted or not
     for order, candidate in enumerate(CANDIDATE_DELIMITERS):
-        score = _score_delimiter(text_sample, candidate)
+        score = _score_delimiter(text_sample, candidate, complete=complete)
+        if _splits_header(text_sample, candidate):
+            in_header.append(candidate)
         if score is None:
             continue
         key = (score[0], score[1], -order)
@@ -459,7 +497,13 @@ def _detect_delimiter(text_sample: str) -> tuple[str, str | None]:
             best, best_delimiter = key, candidate
 
     if best is None:
-        return ",", None  # one column: there is no delimiter to find
+        if not in_header:
+            return ",", None  # one column: there is no delimiter to find
+        return ",", (
+            f"The header contains {', '.join(repr(c) for c in in_header)} but the data "
+            f"rows mostly don't, so the file was read as a single column. If it has "
+            f"several columns, check the delimiter."
+        )
     return best_delimiter, (
         f"Could not detect the delimiter from the data (rows have different numbers "
         f"of fields); guessed {best_delimiter!r}: it splits the header into "
@@ -467,17 +511,20 @@ def _detect_delimiter(text_sample: str) -> tuple[str, str | None]:
     )
 
 
-def _score_delimiter(text_sample: str, delimiter: str) -> tuple[float, int] | None:
+def _score_delimiter(
+    text_sample: str, delimiter: str, *, complete: bool = False
+) -> tuple[float, int] | None:
     """Score `delimiter` as the field separator of `text_sample`.
 
     Parses the header record and up to `DELIMITER_CHECK_ROWS` data records with
     `csv.reader` (so quoted delimiters and quoted line breaks are handled). Blank
-    records are ignored, and the last record is dropped because the sample may
-    cut it off.
+    records are ignored. Unless `complete` (the text runs to the end of the
+    file), the last record is dropped because the sample may cut it off.
 
     Returns:
-        None if the delimiter doesn't split the header, or doesn't split at least
-        half of the data rows. Otherwise (share of data rows whose field count
+        None if the delimiter doesn't split the header, or if it splits fewer than
+        half of the data rows *and* fewer than a fifth of them have the header's
+        field count. Otherwise (share of data rows whose field count
         equals the header's, number of header fields). With no data rows at all,
         the header alone decides.
     """
@@ -496,17 +543,26 @@ def _score_delimiter(text_sample: str, delimiter: str) -> tuple[float, int] | No
         return None
     header_fields = len(records[0])
     rows = records[1:]
-    if len(rows) > 1:
+    if len(rows) > 1 and not complete:
         rows = rows[:-1]  # possibly cut off by the end of the sample
     rows = [r for r in rows if r and not (len(r) == 1 and not r[0].strip())]
     if not rows:
         return 1.0, header_fields
 
     split = sum(1 for r in rows if len(r) > 1)
-    if split * 2 < len(rows):
-        return None  # the data rows mostly aren't split: not this delimiter
     matching = sum(1 for r in rows if len(r) == header_fields)
+    if split * 2 < len(rows) and matching * 5 < len(rows):
+        return None  # the data doesn't support this delimiter
     return matching / len(rows), header_fields
+
+
+def _splits_header(text_sample: str, delimiter: str) -> bool:
+    """Return True if `delimiter` splits the header record into several fields."""
+    try:
+        header = next(csv.reader(io.StringIO(text_sample, newline=""), delimiter=delimiter))
+    except (StopIteration, csv.Error):
+        return False
+    return len(header) > 1
 
 
 def _check_header(text_sample: str, delimiter: str) -> list[str]:
@@ -542,6 +598,54 @@ def _check_header(text_sample: str, delimiter: str) -> list[str]:
             "later copies were renamed with a '.1', '.2' suffix."
         )
     return warnings
+
+
+def _count_unread_rows(
+    path: Path, delimiter: str, encoding: str, *, skiprows: int, rows_read: int
+) -> tuple[int, str]:
+    """Count data records that pandas silently failed to read.
+
+    pandas' python engine drops a record with broken quoting (``"a"b,c``)
+    without calling `on_bad_lines`, and stops early when the broken record is
+    the last one. To catch this, the file is parsed again with `csv.reader`,
+    which reads such records leniently, and its record count is compared with
+    what pandas returned (rows plus malformed rows, header excluded).
+
+    Args:
+        path: The CSV file.
+        delimiter: The detected delimiter.
+        encoding: The encoding pandas used ("utf-8" covers UTF-8 with BOM too).
+        skiprows: Blank lines before the header (one record each for csv).
+        rows_read: Data rows pandas returned, including blank-line rows, plus
+            the malformed rows it reported.
+
+    Returns:
+        (number of records pandas lost, a short description of the first broken
+        record such as "line 4: ',' expected after '\"'"). (0, "") when nothing
+        was lost or the file can't be re-checked; the pandas result then stands.
+    """
+    try:
+        with path.open("r", encoding=encoding, newline="") as f:
+            total = sum(1 for _ in csv.reader(f, delimiter=delimiter))
+    except (OSError, UnicodeDecodeError, csv.Error):
+        # csv refuses e.g. fields over its size limit; keep pandas' result.
+        return 0, ""
+
+    unread = total - skiprows - 1 - rows_read
+    if unread <= 0:
+        return 0, ""
+
+    detail = "the broken line could not be located"
+    try:
+        with path.open("r", encoding=encoding, newline="") as f:
+            reader = csv.reader(f, delimiter=delimiter, strict=True)
+            for _ in reader:
+                pass
+    except csv.Error as exc:
+        detail = f"first one near line {reader.line_num}: {exc}"
+    except (OSError, UnicodeDecodeError):
+        pass
+    return unread, detail
 
 
 def _read_with_fallback(
