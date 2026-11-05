@@ -10,7 +10,7 @@ This file covers how work moves through the project. Each section says what the 
    - The type is `feature/` for new functionality, `chore/` for setup and tooling, `docs/` for documentation, or `fix/` for bug fixes.
    - Examples: `feature/quality-checks`, `chore/project-setup`.
 3. Commit on that branch. Run the tests before every commit (`.venv/bin/pytest`).
-4. Push and open a PR into `main`, `dev` or `testing`. Claude can do this with the `pr-creator` agent.
+4. Push and open a PR into `main`, `dev` or `testing`. When Claude finishes a feature, it does this itself once the tests pass (see section 4).
 5. After the PR is merged, delete the branch locally (`git branch -d <branch>`) and on GitHub.
 
 **Problem it solves:** if work goes straight to `main`, half-finished or broken code becomes the version everyone builds on, and there is no point at which changes are reviewed.
@@ -43,7 +43,23 @@ Large plans go in `docs/` (e.g. `docs/phase-1-plan.md`).
 
 **Why we use it:** every change stays visible and reviewable by the user.
 
-## 4. Getting the sample dataset
+## 4. Finishing a feature: test, then PR
+
+**What:** when Claude is satisfied that a feature on its branch is complete, it does the following on its own:
+1. Writes unit tests where needed (business logic, complex algorithms, error-prone conditions).
+2. Runs the full suite with `.venv/bin/pytest`.
+3. If tests fail, it fixes them and runs the suite again. If a failure can't be fixed, it stops and reports to the user, and no PR is opened.
+4. Once all tests pass, it commits and opens a PR with the `pr-creator` agent. `pr-creator` runs the tests once more and refuses to open the PR if any fail.
+5. The user reviews the PR and merges it. Claude never merges.
+
+**Problem it solves:** before this rule, "done" depended on someone remembering to write tests, run them and ask for a PR. That made it easy for untested or broken code to reach review, or for finished work to sit on a branch.
+
+**Why we use it:**
+- Every PR arrives with passing tests, so review time goes to the design and the code, not to finding failing tests.
+- The test run happens twice: once by Claude while working and once by `pr-creator` just before the PR is opened.
+- The user stays in control: nothing reaches `main` without the user's review and merge.
+
+## 5. Getting the sample dataset
 
 **What:**
 1. Download the sample dataset (see `docs/phase-1-plan.md`) by hand.
@@ -54,7 +70,7 @@ Large plans go in `docs/` (e.g. `docs/phase-1-plan.md`).
 
 **Why we use it:** `.gitignore` excludes data files and keeps only the folder structure. Everyone fetches the data themselves, and the raw copy always remains the untouched original to compare against.
 
-## 5. Development environment
+## 6. Development environment
 
 **What:**
 ```bash
