@@ -8,7 +8,7 @@ Data Quality Guardian analyzes CSV datasets to spot bad data so they can be clea
 See @./README.md for the project description.
 
 ## Project status
-The repo currently holds only `README.md` and this file. No source code, dependencies, tests or docs exist yet. Create the folders below when they are first needed, and update this file with real commands (app entry point, test runner) once they exist.
+Phase 1 (detection engine) is in progress; see `docs/phase-1-plan.md` for scope and order of work. There is no Streamlit app yet (Phase 2). Update the commands below when an app entry point exists.
 
 ## Tech Stack
 - Language: Python
@@ -17,7 +17,17 @@ The repo currently holds only `README.md` and this file. No source code, depende
 - Packages: install with `pip install <package-name>` and add every new package to `requirement.txt` (the name is singular in this project).
 
 ## Commands
-- Install dependencies: `pip install -r requirement.txt`
+The project uses a virtual environment in `.venv/` (the system Python does not allow global pip installs).
+- Create the environment: `python3 -m venv .venv`
+- Install dependencies: `.venv/bin/pip install -r requirement.txt`
+- Run all tests: `.venv/bin/pytest`
+- Run one test file: `.venv/bin/pytest tests/test_loader.py`
+- Run one test: `.venv/bin/pytest tests/test_loader.py::test_name`
+
+## Architecture
+- `src/loader.py`: `load_csv()` is the single entry point for reading a dataset. It reads **every column as raw text** (`dtype=str`, `keep_default_na=False`), so values like `"NA"`, `""` and `"abc"` in a numeric column survive for the checks to inspect. It returns a `LoadResult` (DataFrame plus encoding, delimiter, skipped rows and warnings) and raises `DataLoadError` for files that cannot be analyzed.
+- `src/checks/`: one module per check; each takes a DataFrame and returns a list of finding dicts (shape in `docs/phase-1-plan.md`).
+- Notebooks import from `src/`; they never reimplement check logic.
 
 ## Folder structure
 - `./src`: source code.
@@ -42,7 +52,6 @@ Claude may create PRs. Use the `pr-creator` agent (`.claude/agents/pr-creator.md
 ## Agents
 - Multi-agent work is NOT allowed when developing a feature: do not spawn parallel or fan-out subagents to plan, write or review feature code. Work on a feature in a single session so the user stays in control of what changes.
 - Allowed: single-purpose agents that are part of the project's own system and help the user, such as `pr-creator`. New agents of this kind go in `.claude/agents/` and must focus on one specific task.
-Never work directly on `main`. Create a branch for each feature, open a PR into `main`, `dev` or `testing` when it is done, and delete the branch once the PR is accepted.
 
 ## Documentation
 - `./docs/workflow.md`: workflows (such as the git branch workflow above) with an explanation of the problem each one solves and why it is used.
