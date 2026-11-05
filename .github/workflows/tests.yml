@@ -1,0 +1,53 @@
+# Runs the test suite on GitHub so every PR shows whether the tests pass.
+# Plan and design decisions: docs/ci-plan.md. How it fits the workflow: docs/workflow.md.
+name: Tests
+
+on:
+  # Every PR into the long-lived branches.
+  pull_request:
+    branches: [main, dev, testing]
+  # main itself, after each merge.
+  push:
+    branches: [main]
+  # Manual runs from the Actions tab.
+  workflow_dispatch:
+
+# The job only reads the code; it never writes to the repository.
+permissions:
+  contents: read
+
+# A new push to the same branch cancels the run that is still going.
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pytest:
+    name: pytest
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      # Same default text encoding as a typical local setup.
+      PYTHONUTF8: "1"
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
+
+    steps:
+      - name: Check out the code
+        uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+          # Reuse downloaded packages between runs; the cache resets when requirement.txt changes.
+          cache: pip
+          cache-dependency-path: requirement.txt
+
+      # Same commands as CLAUDE.md, so CI and local runs behave alike.
+      - name: Create the virtual environment and install dependencies
+        run: |
+          python -m venv .venv
+          .venv/bin/pip install -r requirement.txt
+
+      - name: Run the tests
+        run: .venv/bin/pytest -q
