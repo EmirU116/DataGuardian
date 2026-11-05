@@ -13,4 +13,19 @@ for more details of the projct, use @./README.md file as a reference to understa
 - ```./src``` folder is for the source code.
 - ```./data``` folder is a place for datasets files like .csv.
 - ```./data/raw-data``` folder is where the original dataset should be placed. basically where there is no changes of.
+- ```./docs``` where all the docummentation lives.
 - ```requirement.txt``` file is a place for the package libraries.
+
+### Codebase rule
+- Before writing a feature, you MUST make a plan first before writing any code on the feature. 
+    - meaning, thinking about worst-case scenarios, making it work with the system to follow the codebase rules.
+- Write comments on code, for easier reading on the codebase and a multi-string to explain how the code works.
+- Error-handling is a must, specially when working on APIs
+- Writing tests for functions that contains bussiness logic, complex algorithms, or error-prone condidtions. 
+
+### Docummentations
+- ```./docs/workflow.md``` add workflows and an explanation about the workflow, for example what it solves, the problems, and why using this workflow. This can be like for example, git branch workflow, for each feature, create a branch and work on the feature branch and never on the main branch. After feature is done, create a PR to main, dev or testing branch, then delete the branch when and if the PR is accepted.
+- ```./docs/coding-style.md``` explaining what the projects coding style, how to structure code.
+
+### Repeatition work
+- Repeated tasks or multiple step tasks should be turned into a skill.
