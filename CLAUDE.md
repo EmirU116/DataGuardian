@@ -25,7 +25,7 @@ The project uses a virtual environment in `.venv/` (the system Python does not a
 - Run one test: `.venv/bin/pytest tests/test_loader.py::test_name`
 
 ## Architecture
-- `src/loader.py`: `load_csv()` is the single entry point for reading a dataset. It reads **every column as raw text** (`dtype=str`, `keep_default_na=False`), so values like `"NA"`, `""` and `"abc"` in a numeric column survive for the checks to inspect. It returns a `LoadResult` (DataFrame plus encoding, delimiter, skipped rows and warnings) and raises `DataLoadError` for files that cannot be analyzed.
+- `src/loader.py`: `load_csv()` is the single entry point for reading a dataset. It reads **every column as raw text** (`dtype=str`, `keep_default_na=False`), so values like `"NA"`, `""` and `"abc"` in a numeric column survive for the checks to inspect. It returns a `LoadResult` (DataFrame plus encoding, delimiter, skipped rows, ignored blank lines and warnings) and raises `DataLoadError` for files that cannot be analyzed.
 - `src/checks/`: one module per check; each takes a DataFrame and returns a list of finding dicts (shape in `docs/phase-1-plan.md`).
 - Notebooks import from `src/`; they never reimplement check logic.
 

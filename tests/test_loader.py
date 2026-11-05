@@ -155,6 +155,121 @@ def test_large_file_warns(tmp_path):
     assert any("threshold" in w for w in result.warnings)
 
 
+# --- Blank lines -------------------------------------------------------------
+# Every line of a file must be accounted for:
+# rows loaded + skipped_rows + blank_lines (+ blank lines kept as "" values).
+
+
+def test_blank_line_between_rows_is_dropped_and_counted(tmp_path):
+    result = load_csv(write(tmp_path, "a,b\n1,2\n\n3,4\n"))
+
+    assert result.df["a"].tolist() == ["1", "3"]
+    assert result.blank_lines == 1
+    assert any("Ignored 1 blank line(s) between rows" in w for w in result.warnings)
+
+
+def test_whitespace_only_line_in_multi_column_file_is_dropped(tmp_path):
+    result = load_csv(write(tmp_path, "a,b\n1,2\n   \n3,4\n"))
+
+    assert result.df["a"].tolist() == ["1", "3"]
+    assert result.blank_lines == 1
+
+
+def test_row_of_empty_fields_is_kept(tmp_path):
+    """',' is a real record whose fields are empty, not a blank line."""
+    result = load_csv(write(tmp_path, "a,b\n1,2\n,\n"))
+
+    assert result.df.values.tolist() == [["1", "2"], ["", ""]]
+    assert result.blank_lines == 0
+
+
+def test_single_column_blank_line_is_kept_as_empty_value(tmp_path):
+    result = load_csv(write(tmp_path, "name\nAlice\n\nBob\n"))
+
+    assert result.df["name"].tolist() == ["Alice", "", "Bob"]
+    assert result.blank_lines == 0
+    assert any("Kept 1 blank line(s) as empty values" in w for w in result.warnings)
+
+
+def test_single_column_whitespace_value_is_kept_as_written(tmp_path):
+    df = load_csv(write(tmp_path, "name\nAlice\n   \nBob\n")).df
+    assert df["name"].tolist() == ["Alice", "   ", "Bob"]
+
+
+def test_single_column_trailing_blank_lines_are_dropped(tmp_path):
+    result = load_csv(write(tmp_path, "name\nAlice\nBob\n\n\n"))
+
+    assert result.df["name"].tolist() == ["Alice", "Bob"]
+    assert result.blank_lines == 2
+    assert any("at the end of the file" in w for w in result.warnings)
+
+
+def test_blank_lines_before_header_are_skipped(tmp_path):
+    result = load_csv(write(tmp_path, "\n\na,b\n1,2\n"))
+
+    assert list(result.df.columns) == ["a", "b"]
+    assert result.df.values.tolist() == [["1", "2"]]
+    assert result.blank_lines == 2
+    assert any("before the header" in w for w in result.warnings)
+
+
+def test_header_check_still_works_after_leading_blank_lines(tmp_path):
+    result = load_csv(write(tmp_path, "\nid,name,id\n1,a,2\n"))
+    assert any("Duplicate column name" in w for w in result.warnings)
+
+
+def test_blank_lines_with_windows_line_endings(tmp_path):
+    result = load_csv(write(tmp_path, "\r\na,b\r\n1,2\r\n\r\n3,4\r\n"))
+
+    assert result.df["b"].tolist() == ["2", "4"]
+    assert result.blank_lines == 2
+
+
+def test_blank_line_inside_quoted_field_is_part_of_the_value(tmp_path):
+    result = load_csv(write(tmp_path, 'a,b\n1,"x\n\ny"\n2,z\n'))
+
+    assert result.df["b"].tolist() == ["x\n\ny", "z"]
+    assert result.blank_lines == 0
+
+
+def test_only_blank_lines_after_header_means_no_data(tmp_path):
+    with pytest.raises(DataLoadError, match="no data rows"):
+        load_csv(write(tmp_path, "a,b\n\n\n"))
+
+
+def test_no_warning_for_file_without_blank_lines(tmp_path):
+    result = load_csv(write(tmp_path, "a,b\n1,2\n"))
+
+    assert result.blank_lines == 0
+    assert result.warnings == []
+
+
+# --- Other edge cases --------------------------------------------------------
+
+
+def test_leading_zeros_are_kept(tmp_path):
+    df = load_csv(write(tmp_path, "code,zip\n007,01234\n")).df
+    assert df.values.tolist() == [["007", "01234"]]
+
+
+def test_header_without_trailing_newline_has_no_data(tmp_path):
+    with pytest.raises(DataLoadError, match="no data rows"):
+        load_csv(write(tmp_path, "id,name"))
+
+
+def test_last_row_without_trailing_newline_is_loaded(tmp_path):
+    assert load_csv(write(tmp_path, "a,b\n1,2\n3,4")).df["a"].tolist() == ["1", "3"]
+
+
+def test_very_wide_file(tmp_path):
+    header = ",".join(f"c{i}" for i in range(2000))
+    row = ",".join(str(i) for i in range(2000))
+    df = load_csv(write(tmp_path, f"{header}\n{row}\n")).df
+
+    assert df.shape == (1, 2000)
+    assert df["c1999"].tolist() == ["1999"]
+
+
 # --- Files that cannot be loaded ---------------------------------------------
 
 
