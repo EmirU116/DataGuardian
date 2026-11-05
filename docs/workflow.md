@@ -7,7 +7,7 @@ This file covers how work moves through the project. Each section says what the 
 **What:**
 1. Update `main`: `git checkout main && git pull`.
 2. Create a branch for the work: `git checkout -b <type>/<short-name>`.
-   - The type is `feature/` for new functionality, `chore/` for setup and tooling, `docs/` for documentation, or `fix/` for bug fixes.
+   - The type is `feature/` for new functionality or `fix/` for bug fixes. A `chore/` branch is only needed when a chore can't be pushed straight to `main` (section 9).
    - Examples: `feature/quality-checks`, `chore/project-setup`.
 3. Commit on that branch. Run the tests before every commit (`.venv/bin/pytest`).
 4. Push and open a PR into `main`, `dev` or `testing`. When Claude finishes a feature, it does this itself once the tests pass (see section 4).
@@ -20,7 +20,7 @@ This file covers how work moves through the project. Each section says what the 
 - Each feature is reviewed as a whole through its PR.
 - An unfinished experiment can be thrown away by deleting its branch.
 
-**Exception:** small changes, such as editing `.md` files, may be committed directly to `main` (see `CLAUDE.md`).
+**Exception:** chores (only `.md` files, `.gitignore`, `requirement.txt` or `pyproject.toml`) are committed and pushed straight to `main` without a branch or PR. See section 9.
 
 ## 2. Plan before code
 
@@ -125,3 +125,25 @@ Plan and design decisions: `docs/ci-plan.md`.
 - Work keeps moving through the plan.
 - The user still reviews and merges every PR. Merging is the go-ahead for the next item.
 - **Limit:** the watch only runs while the Claude Code session is open. Nothing runs on GitHub on Claude's behalf.
+
+## 9. Chores: straight to `main`
+
+**What:** a change is a chore only if every file it touches is one of:
+- any `.md` file: docs, `CLAUDE.md`, `README.md`, agent and skill definitions;
+- `.gitignore`, `requirement.txt` or `pyproject.toml`.
+
+Chores skip the branch, the plan and the PR:
+1. `git checkout main && git pull --ff-only`, then make the edit.
+2. If `requirement.txt` or `pyproject.toml` changed, install and run the tests first (`.venv/bin/pip install -r requirement.txt`, `.venv/bin/pytest`). If anything fails, it becomes a PR instead.
+3. Commit and `git push origin main`.
+4. Watch the `Tests` run that the push starts on `main` (section 7). If it fails, fix it immediately or revert.
+5. If GitHub rejects the push (for example, branch protection was turned on), use a `chore/<name>` branch and a PR.
+
+Everything else goes through a branch and a PR (sections 1 and 4): code in `src/`, tests, notebooks, CI workflows, and any change that mixes chore files with code.
+
+**Problem it solves:** a PR for every doc tweak meant waiting for a review on changes that can't break anything, and the PR list filled up with noise next to real features.
+
+**Why we use it:**
+- Doc and housekeeping changes land immediately.
+- Reviews are spent on code, where they matter.
+- Config chores that can affect the tests (`requirement.txt`, `pyproject.toml`) are tested locally before the push and by CI right after it. A failure is fixed or reverted straight away.

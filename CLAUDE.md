@@ -38,16 +38,31 @@ The project uses a virtual environment in `.venv/` (the system Python does not a
 
 ## Codebase rules
 - Before writing any code for a feature, you MUST make a plan first. The plan covers worst-case scenarios and how the feature fits the existing system and these rules.
-- Exception: small changes, such as editing `.md` files, do not need a plan and may be committed directly to `main` without a feature branch.
+- Exception: chores (see "Chores" under Git workflow) do not need a plan; they are committed and pushed straight to `main`.
 - Comment the code for readability, and give functions/modules docstrings explaining how the code works.
 - Error handling is required, especially when working with APIs.
 - Write tests for functions that contain business logic, complex algorithms or error-prone conditions.
 - Repeated tasks or multi-step tasks should be turned into a skill.
 
 ## Git workflow
-Never work directly on `main` (except for the small changes allowed above). Create a branch for each feature, open a PR into `main`, `dev` or `testing` when it is done, and delete the branch once the PR is accepted.
+Never work directly on `main`, except for chores (below). Create a branch for each feature or fix, open a PR into `main`, `dev` or `testing` when it is done, and delete the branch once the PR is accepted.
+
+### Chores: straight to `main`, no PR
+A change is a chore only if **every** file it touches is one of:
+- any `*.md` file (`docs/`, `CLAUDE.md`, `README.md`, `.claude/agents/*.md`, `.claude/skills/**`);
+- `.gitignore`, `requirement.txt` or `pyproject.toml`.
+
+Everything else is a feature or fix and goes through a branch and PR: `src/`, `tests/`, `notebooks/`, `.github/workflows/`, and any change that mixes chore files with code (the whole change goes in the PR).
+
+To ship a chore:
+1. `git checkout main && git pull --ff-only`, then make the edit.
+2. If `requirement.txt` or `pyproject.toml` changed: run `.venv/bin/pip install -r requirement.txt` and `.venv/bin/pytest` first. If anything fails, stop and make it a PR instead.
+3. Commit, then `git push origin main`.
+4. Watch the `Tests` run the push starts (`gh run list --branch main --limit 1 --json status,conclusion`). If it fails, fix it at once with another chore commit, or revert.
+5. If the push is rejected (for example, branch protection was turned on), use a `chore/<name>` branch and a PR instead.
 
 ### Finishing a feature (definition of done)
+This applies to features and fixes, not chores.
 When Claude is satisfied that a feature on its branch is complete, it does the following without waiting to be asked:
 1. Write unit tests for the new code where the rule under "Codebase rules" requires them (business logic, complex algorithms, error-prone conditions). Docs-only changes need no tests.
 2. Run the full suite: `.venv/bin/pytest`.
